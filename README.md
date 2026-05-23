@@ -6,6 +6,9 @@ A sleek and easy to use Jellyfin music player, with the goal to provide a more S
 
 **Only Jellyfin is supported as a music provider at the moment, however local folders and other media servers will be added in the future.**
 
+## Screenshot
+![App Screenshot](https://github.com/asavage7/finload/blob/72c19fe26f09bcc2003b10618a6e30fb431f0131/static/app1.png)
+
 ## Features
 
 - Library views for albums and artists
