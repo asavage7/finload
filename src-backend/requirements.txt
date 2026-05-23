@@ -1,0 +1,10 @@
+fastapi>=0.95.0
+uvicorn[standard]>=0.22.0
+peewee>=3.15.0
+python-mpv>=1.0.0
+httpx>=0.24.0
+platformdirs>=3.0.0
+colorthief>=0.2.1
+nicegui>=1.0.0
+Pillow>=9.0.0
+python-dotenv>=1.0.0
