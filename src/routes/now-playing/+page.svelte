@@ -1,113 +1,58 @@
 <script lang="ts">
   import { playerState } from "$lib/store";
-  import ProgressBar from "$lib/components/ProgressBar.svelte";
   import Rating from "$lib/components/Rating.svelte";
-  import {
-    IconPlayerPlayFilled,
-    IconPlayerPauseFilled,
-    IconPlayerTrackPrevFilled,
-    IconPlayerTrackNextFilled,
-    IconArrowsShuffle,
-    IconRepeat,
-    IconPlaylistFilled,
-  } from "@tabler/icons-svelte";
-  import { formatTime } from "$lib/utils/formatTime";
+  import QueuePanel from "$lib/components/right-panels/QueuePanel.svelte";
   import { apiUrl } from "$lib/backend";
-
-  let currentTrackId = "";
-
-  $: if (currentTrackId != $playerState.current_track?.id) {
-    currentTrackId = $playerState.current_track?.id?.toString() || "";
-  }
-
-  function dispatch(action: string, value?: unknown) {
-    window.dispatchEvent(
-      new CustomEvent<{ action: string; value?: unknown }>("player-command", {
-        detail: { action, value },
-      }),
-    );
-  }
-
-  function togglePause() {
-    dispatch("toggle_pause");
-  }
-
-  function skipNext() {
-    dispatch("skip_next");
-  }
-
-  function skipPrev() {
-    dispatch("skip_prev");
-  }
-
-  function seek(position: number) {
-    dispatch("seek", position);
-  }
+  import { IconArrowBack } from "@tabler/icons-svelte";
 </script>
 
 <div
-  class="w-full max-w-6xl mx-auto h-full flex items-center justify-between bg-transparent p-2 text-white select-none h-20 border border-white/10 rounded-2xl shadow-lg flex items-center overflow-hidden relative isolate"
-  style="background-image: linear-gradient(45deg, {$playerState.accent_colors[0]}30, {$playerState.accent_colors[1]}10); background-color: #222224;"
+  class="relative isolate flex h-full w-full overflow-hidden p-12 text-white select-none"
+  style="background-color: {$playerState.accent_colors[2]};"
 >
-  <div class="flex items-center gap-4 w-1/3">
-    <img
-      src={apiUrl(`/api/image/${$playerState.current_track?.album_id || "default"}?size=62`)}
-      alt="Current Track"
-      class="w-16 h-16 object-cover rounded-lg border border-white/10 bg-zinc-800"
-    />
-    <div class="flex flex-col gap-0 justify-center min-w-0 flex-1">
-      <div class="text-sm mb-0.5 font-bold truncate">
-        {$playerState.current_track?.title || "No Track Playing"}
-      </div>
-      <div class="text-xs mb-1.5 text-zinc-400 truncate">
-        {$playerState.current_track?.artist_name || "Unknown Artist"} • {$playerState.current_track?.album_name || "Unknown Album"}
-      </div>
-      <Rating rating={$playerState.current_track?.rating || 0} size={12} max={5} />
+  <button
+    on:click={() => history.back()}
+    class="absolute top-4 left-4 p-2 rounded-full bg-transparent text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer transition"
+  >
+    <div class="flex items-center gap-2 px-2">
+      <IconArrowBack size={16} />
+      Back
     </div>
-  </div>
-
-  <div class="absolute left-1/2 -translate-x-1/2 flex flex-col justify-center items-center gap-2 w-9/16">
-    <div class="flex items-center gap-4 mt-1">
-      <button class="p-2 rounded-full text-zinc-400 hover:text-white bg-transparent hover:bg-white/10 transition">
-        <IconArrowsShuffle size={16} />
-      </button>
-      <button on:click={skipPrev} class="p-2 rounded-full bg-transparent hover:bg-white/10 transition">
-        <IconPlayerTrackPrevFilled size={16} />
-      </button>
-      <button
-        on:click={togglePause}
-        class="p-2 rounded-full transition-all duration-500 border border-white/10"
-        style="background-color: {$playerState.accent_colors[0]}"
-      >
-        {#if $playerState.is_paused}
-          <IconPlayerPlayFilled size={20} />
-        {:else}
-          <IconPlayerPauseFilled size={20} />
-        {/if}
-      </button>
-      <button on:click={skipNext} class="p-2 rounded-full bg-transparent hover:bg-white/10 transition">
-        <IconPlayerTrackNextFilled size={16} />
-      </button>
-      <button class="p-2 rounded-full text-zinc-400 hover:text-white bg-transparent hover:bg-white/10 transition">
-        <IconRepeat size={16} />
-      </button>
-    </div>
-
-    <div class="flex items-center w-full justify-center gap-3 px-8">
-      <span class="w-8 text-right text-[11px] text-zinc-400">{formatTime($playerState.time_pos)}</span>
-      <ProgressBar
-        value={$playerState.time_pos}
-        max={$playerState.duration}
-        accentColor={$playerState.accent_colors[0]}
-        onSeek={seek}
+  </button>
+  <img
+    src={apiUrl(`/api/image/${$playerState.current_track?.album_id}?size=800`)}
+    alt=""
+    class="absolute inset-0 w-full object-cover blur-3xl opacity-25 scale-110 pointer-events-none z-0"
+  />
+  <div
+    class="mx-auto flex h-full w-full max-w-[2000px] items-center justify-between gap-12 pb-24 pt-4 z-10"
+  >
+    <div
+      class="flex h-full w-full flex-col max-h-[1000px] my-auto items-center justify-center p-4 gap-8"
+    >
+      <img
+        src={apiUrl(
+          `/api/image/${$playerState.current_track?.album_id || "default"}?size=2000`,
+        )}
+        alt="Current Track"
+        class="aspect-square m-auto object-cover rounded-2xl shadow-2xl border border-white/10 bg-zinc-800"
       />
-      <span class="w-8 text-left text-[11px] text-zinc-400">{formatTime($playerState.duration)}</span>
+      <div
+        class="flex w-full max-w-md flex-1 min-w-0 flex-col justify-center text-center"
+      >
+        <div class="truncate text-3xl font-bold">
+          {$playerState.current_track?.title || "No Track Playing"}
+        </div>
+        <div class="truncate text-xl text-zinc-400">
+          {$playerState.current_track?.artist_name || "Unknown Artist"} ∙ {$playerState.current_track?.album_name || "Unknown Album"}
+        </div>
+        <Rating rating={$playerState.current_track?.rating || 0} size={24} />
+      </div>
     </div>
-  </div>
-
-  <div class="flex items-center gap-4 justify-end w-7/32 pr-4">
-    <button class="p-2 rounded-full bg-transparent hover:bg-white/10 transition">
-      <IconPlaylistFilled size={16} />
-    </button>
+    <div
+      class="flex h-full w-full max-w-2xl mx-auto justify-center max-h-[1000px] overflow-hidden"
+    >
+      <QueuePanel />
+    </div>
   </div>
 </div>

@@ -17,6 +17,7 @@
 
     // 2. Define state variables for data holding
     let albumData: any = null;
+    let duration_ms = 0;
     let tracks: any[] = [];
     let discs: any[] = [];
     let isLoading = true;
@@ -32,7 +33,9 @@
             discs = data.discs;
 
             // Fetch accent colors for dynamic theming (optional)
-            const colorRes = await fetch(apiUrl(`/api/album/${albumId}/accent-colors`));
+            const colorRes = await fetch(
+                apiUrl(`/api/album/${albumId}/accent-colors`),
+            );
             const colors = await colorRes.json();
             albumData.accent_colors = colors;
             albumData = albumData;
@@ -46,11 +49,16 @@
     // 4. Playback handlers to communicate with Python MPV
     async function playAlbum() {
         // Challenge logic: Tell backend to clear current queue and play this whole album list
-        await fetch(apiUrl(`/api/playback/play_album/${albumId}`), { method: "POST" });
+        await fetch(apiUrl(`/api/playback/play_album/${albumId}`), {
+            method: "POST",
+        });
     }
 
     async function playTrack(trackId: string) {
-        await fetch(apiUrl(`/api/playback/play_album/${albumId}?track_id=${trackId}`), { method: "POST" });
+        await fetch(
+            apiUrl(`/api/playback/play_album/${albumId}?track_id=${trackId}`),
+            { method: "POST" },
+        );
     }
 
     $: showDiscLabels =
@@ -63,7 +71,7 @@
     <ViewLayout>
         <header
             slot="header"
-            class="relative w-full h-130 md:h-80 flex items-end p-8 bg-gradient-to-b from-zinc-800/40 to-zinc-950"
+            class="relative w-full flex items-end p-8 bg-gradient-to-b from-zinc-800/40 to-zinc-950 pt-18"
         >
             <img
                 src={apiUrl(`/api/image/${albumData.id}?size=800`)}
@@ -96,7 +104,7 @@
                         style="color: {albumData.accent_colors[1]}">ALBUM</span
                     >
                     <h1
-                        class="text-2xl md:text-5xl font-black text-white line-clamp-2"
+                        class="text-2xl md:text-5xl font-black text-white line-clamp-2 mb-0 pb-1"
                     >
                         {albumData.title}
                     </h1>
@@ -112,10 +120,10 @@
                         class="flex flex-wrap items-center justify-center md:justify-start gap-2 text-sm text-zinc-400 font-medium"
                     >
                         <span>{albumData.release_year}</span>
-                        <span>•</span>
-                        <span>{albumData.tracks_count || 0} tracks</span>
-                        <span>•</span>
-                        <span>{formatTime(albumData.duration_ms)}</span>
+                        <span>∙</span>
+                        <span>{tracks.length} tracks</span>
+                        <span>∙</span>
+                        <span>{formatTime(tracks.reduce((acc: number, track: any) => acc + track.duration_ms, 0),true)}</span>
                     </div>
                 </div>
 
@@ -213,7 +221,7 @@
                             </div>
 
                             <div class="flex gap-4 justify-end items-center">
-                                <div class="text-right text-zinc-400 text-sm">
+                                <div class="time-text text-xs right text-zinc-400 text-sm">
                                     {formatTime(track.duration_ms, true)}
                                 </div>
                                 <button

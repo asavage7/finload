@@ -71,13 +71,19 @@ npm install
 3) Run both dev servers together (cross-platform):
 
 ```bash
-npm run dev:all
+npm run dev
 # Don't panic if the app doesn't load immediately! It takes ~30s on first launch to load.
+```
+
+4) For the desktop shell during development:
+
+```bash
+npm run dev:tauri
 ```
 
 Notes:
 - The backend will attempt to auto-load the repository `.env` file (project root `.env`) using `python-dotenv`. If you prefer another mechanism, set environment variables in your shell before starting `uvicorn`.
-- Set `INITIAL_FULL_SYNC=true` to import the full Jellyfin library on launch. Leave it `false` for normal startup.
+- `INITIAL_FULL_SYNC` defaults to `false` in `.env.example` to keep startup fast and light. Set it to `true` only when you want a one-time full import.
 
 ```bash
 # backend (from repo root)

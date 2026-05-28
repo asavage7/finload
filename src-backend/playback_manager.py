@@ -18,6 +18,8 @@ class PlaybackManager:
         self.player['demuxer-max-bytes'] = '15M'
         
         self.listeners = []
+        self.queue_state = []
+        self.queue_dirty = True
         self.current_state = {
             "time_pos": 0,
             "duration": 0,
@@ -71,7 +73,11 @@ class PlaybackManager:
     def add_listener(self, callback):
         self.listeners.append(callback)
         # Send the actual playback state so new clients start from the real mpv state.
-        callback(self.current_state.copy())
+        if self.queue_dirty or not self.queue_state:
+            self.queue_state = self.build_queue_state()
+            self.queue_dirty = False
+
+        callback({**self.current_state, "queue": self.queue_state})
 
     def refresh_track_cache(self):
         """Fetches the track from the DB and caches it as a dictionary."""
@@ -88,6 +94,7 @@ class PlaybackManager:
             self.current_state["current_track"] = {
                 "id": getattr(track, 'id', None),
                 "album_id": album_id,
+                "artist_id": str(track.artist.secondary_id) if track.artist and getattr(track.artist, 'secondary_id', None) else (str(track.artist.id) if track.artist else None),
                 "album_name": album_name,
                 "title": getattr(track, 'title', "Unknown Title"),
                 "artist_name": track.artist.name if track.artist else "Unknown Artist",
@@ -125,15 +132,28 @@ class PlaybackManager:
 
     def broadcast_state(self):
         """Sends the current playback state to all connected listeners. Only sends diffs to minimize payload size."""
-        self.current_state["queue"] = self.build_queue_state()
-        if self.current_state != self.prev_state:
-            diff = {k: self.current_state[k] for k in self.current_state if self.current_state[k] != self.prev_state.get(k)}
+        queue_changed = self.queue_dirty or not self.prev_state
+        if queue_changed:
+            self.queue_state = self.build_queue_state()
+            self.queue_dirty = False
+
+        snapshot = {**self.current_state, "queue": self.queue_state}
+        diff = {
+            key: value
+            for key, value in self.current_state.items()
+            if key != "queue" and value != self.prev_state.get(key)
+        }
+
+        if queue_changed:
+            diff["queue"] = self.queue_state
+
+        if diff:
             for listener in self.listeners:
                 try:
                     listener(diff)
                 except Exception:
                     pass
-            self.prev_state = self.current_state.copy()
+            self.prev_state = snapshot.copy()
 
     def _restore_state(self):
         """Loads the current queue item if app was restarted."""
@@ -153,6 +173,7 @@ class PlaybackManager:
         """Clears the queue, loads the album, and sets absolute positions."""
         with db.atomic():
             QueueItem.delete().execute() # Clear everything
+            self.queue_dirty = True
             
             if context_ids:
                 for i, tid in enumerate(context_ids):
@@ -191,6 +212,8 @@ class PlaybackManager:
 
             for i, tid in enumerate(track_ids):
                 QueueItem.create(track_id=tid, queue_type=0, position=insert_pos + i)
+
+        self.queue_dirty = True
                 
         try:
             self.player.command('playlist-clear')
@@ -213,6 +236,8 @@ class PlaybackManager:
             
             for i, tid in enumerate(track_ids):
                 QueueItem.create(track=tid, queue_type=1, position=insert_pos + i)
+
+        self.queue_dirty = True
                 
         self.prepare_next()
         self.broadcast_state()
@@ -251,6 +276,7 @@ class PlaybackManager:
                 current.save()
                 next_track.is_current = True
                 next_track.save()
+            self.queue_dirty = True
         else:
             pass
         
@@ -273,6 +299,7 @@ class PlaybackManager:
                 current.save()
                 prev_track.is_current = True
                 prev_track.save()
+            self.queue_dirty = True
             self._replace_current_track(prev_track)
             self.prepare_next()
             self.broadcast_state()
@@ -295,6 +322,7 @@ class PlaybackManager:
                 current.save()
                 next_track.is_current = True
                 next_track.save()
+            self.queue_dirty = True
                 
             self._replace_current_track(next_track)
             self.prepare_next()
@@ -322,6 +350,8 @@ class PlaybackManager:
             target_item.is_current = True
             target_item.save()
 
+        self.queue_dirty = True
+
         self._replace_current_track(target_item)
         self.prepare_next()
         
@@ -346,6 +376,8 @@ class PlaybackManager:
                     
             target_item.delete_instance()
             QueueItem.update(position=QueueItem.position - 1).where(QueueItem.position > target_item.position).execute()
+
+        self.queue_dirty = True
             
 
         if is_current:
@@ -360,6 +392,7 @@ class PlaybackManager:
         """Removes all items of a specific type (except the playing track)."""
         with db.atomic():
             QueueItem.delete().where(True).execute()
+        self.queue_dirty = True
         self.player.stop()
         self.player.pause = True
         self.player.command('playlist-clear')
@@ -390,6 +423,8 @@ class PlaybackManager:
             # Set the new position
             dragged_item.position = target_position
             dragged_item.save()
+
+        self.queue_dirty = True
 
         self.prepare_next() # Re-evaluate next track in case the user dragged an item to "up next"
         self.broadcast_state()

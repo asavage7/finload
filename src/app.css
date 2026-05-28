@@ -1,1 +1,28 @@
 @import "tailwindcss";
+@import "@fontsource/lato/400.css";
+@import "@fontsource/lato/700.css";
+@import "@fontsource/lato/900.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+@theme {
+	--font-sans: "Lato", "ui-sans-serif", "system-ui", sans-serif;
+	--font-mono: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", monospace;
+}
+
+html,
+body {
+	font-family: var(--font-sans);
+}
+
+code,
+pre,
+kbd,
+samp {
+	font-family: var(--font-mono);
+}
+
+.time-text {
+	font-variant-numeric: tabular-nums;
+	font-feature-settings: "tnum";
+}

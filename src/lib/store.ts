@@ -3,6 +3,7 @@ import { writable } from "svelte/store";
 export type TrackInfo = {
     id: string | number | null;
     album_id: string | null;
+    artist_id: string | null;
     album_name: string;
     title: string;
     artist_name: string;
@@ -31,7 +32,7 @@ export type PlayerState = {
     current_track: TrackInfo | null;
     queue: QueueItemState[];
     lyrics: string | null;
-    accent_colors: [string, string];
+    accent_colors: [string, string, string];
 };
 
 export const playerState = writable<PlayerState>({
@@ -41,5 +42,7 @@ export const playerState = writable<PlayerState>({
     current_track: null,
     queue: [],
     lyrics: null,
-    accent_colors: ["rgb(255, 255, 255)", "rgb(255, 255, 255)"],
+    accent_colors: ["rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(34, 34, 36)"],
 });
+
+export const queuePanelActive = writable(false);

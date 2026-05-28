@@ -9,9 +9,10 @@
     IconArrowsShuffle,
     IconRepeat,
     IconPlaylistFilled,
+    IconPictureInPictureFilled,
   } from "@tabler/icons-svelte";
 
-  import { playerState } from "$lib/store";
+  import { playerState, queuePanelActive } from "$lib/store";
   import { formatTime } from "$lib/utils/formatTime";
   import { apiUrl } from "$lib/backend";
 
@@ -21,6 +22,10 @@
         detail: { action, value },
       }),
     );
+  }
+
+  function toggleQueuePanel() {
+    queuePanelActive.update((active) => !active);
   }
 
   function togglePause() {
@@ -40,23 +45,44 @@
 <div
   class="w-full max-w-6xl mx-auto h-full flex items-center justify-between bg-transparent p-2 text-white select-none h-20 border border-white/10 rounded-2xl shadow-lg flex items-center overflow-hidden relative isolate"
   style="background-image: linear-gradient(45deg, {$playerState
-    .accent_colors[0]}30, {$playerState
-    .accent_colors[1]}10); background-color: #222224;"
+    .accent_colors[1]}25, {$playerState
+    .accent_colors[0]}20); background-color: {$playerState.accent_colors[2]};"
 >
-  <!-- <img src={`http://127.0.0.1:8000/api/image/${playerState.current_track?.album_id || "default"}?size=62`} alt="" class="absolute left-0 w-1/3 h-full object-cover blur-3xl opacity-50 scale-110 pointer-events-none" /> -->
+  <img
+    src={`http://127.0.0.1:8000/api/image/${$playerState.current_track?.album_id || "default"}?size=62`}
+    alt=""
+    class="absolute left-0 w-1/3 h-full object-cover blur-3xl opacity-25 scale-110 pointer-events-none"
+  />
   <div class="flex items-center gap-4 w-1/3">
-    <img
-      src={apiUrl(`/api/image/${$playerState.current_track?.album_id || 'default'}?size=62`)}
-      alt="Current Track"
-      class="w-16 h-16 object-cover rounded-lg border border-white/10 bg-zinc-800"
-    />
-    <div class="flex flex-col gap-0 justify-center min-w-0 flex-1">
-      <div class="text-sm mb-0.5 font-bold truncate">
-        {$playerState.current_track?.title || "No Track Playing"}
+    <a class="relative flex items-center group" href={`/now-playing`}>
+      <div
+        class="absolute inset-0 bg-black/30 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+      >
+        <IconPictureInPictureFilled
+          size={24}
+          class="text-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 absolute inset-0 m-auto"
+        />
       </div>
-      <div class="text-xs mb-1.5 text-zinc-400 truncate">
-        {$playerState.current_track?.artist_name || "Unknown Artist"} • {$playerState
-          .current_track?.album_name || "Unknown Album"}
+      <img
+        src={apiUrl(
+          `/api/image/${$playerState.current_track?.album_id || "default"}?size=62`,
+        )}
+        alt="Current Track"
+        class="w-16 h-16 object-cover rounded-lg border border-white/10 bg-zinc-800"
+      />
+    </a>
+    <div class="flex flex-col gap-0 justify-center min-w-0 flex-1">
+      <span class="text-sm mb-0.5 font-bold truncate">
+        {$playerState.current_track?.title || "No Track Playing"}
+      </span>
+      <div class="text-xs mb-1.5 text-zinc-400 truncate z-10">
+        <a href={`/artist/${$playerState.current_track?.artist_id}`} class="hover:underline hover:text-white">
+          {$playerState.current_track?.artist_name || "Unknown Artist"}
+        </a>
+        ∙
+        <a href={`/album/${$playerState.current_track?.album_id}`} class="hover:underline hover:text-white">
+          {$playerState.current_track?.album_name || "Unknown Album"}
+        </a>
       </div>
       <Rating rating={$playerState.current_track?.rating || 0} size={12} />
     </div>
@@ -102,7 +128,7 @@
     </div>
 
     <div class="flex items-center w-full justify-center gap-3 px-8">
-      <span class="w-8 text-right text-[11px] text-zinc-400"
+      <span class="time-text w-8 text-right text-[11px] text-zinc-400"
         >{formatTime($playerState.time_pos)}</span
       >
       <ProgressBar
@@ -111,14 +137,14 @@
         accentColor={$playerState.accent_colors[0]}
         onSeek={seek}
       />
-      <span class="w-8 text-left text-[11px] text-zinc-400"
+      <span class="time-text w-8 text-left text-[11px] text-zinc-400"
         >{formatTime($playerState.duration)}</span
       >
     </div>
   </div>
 
   <div class="flex items-center gap-4 justify-end w-7/32 pr-4">
-    <button
+    <button on:click={() => toggleQueuePanel()}
       class="p-2 rounded-full bg-transparent hover:bg-white/10 transition"
     >
       <IconPlaylistFilled size={16} />

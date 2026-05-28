@@ -6,10 +6,7 @@ import re
 from typing import Dict, Any, Optional
 from database import Artist, Track, Album
 import os
-import asyncio
-import httpx
 from platformdirs import user_cache_dir
-from nicegui import app
 
 
 class JellyfinBridge:
@@ -19,8 +16,6 @@ class JellyfinBridge:
         self.user_id = user_id
         self.cache_dir = user_cache_dir("finload")
         os.makedirs(self.cache_dir, exist_ok=True)
-        app.add_static_files("/cache", self.cache_dir)
-        self.client = httpx.AsyncClient(timeout=10)
 
     def _request(self, method: str, path: str, query: Optional[Dict[str, Any]] = None) -> Any:
         url = f"{self.server_url}{path}"
@@ -138,8 +133,7 @@ class JellyfinBridge:
             data = self._request("GET", f"/Users/{self.user_id}/Items", query=query)
             yield from self.yield_audio(data.get("Items", []))
             
-    # Change size to size_px as an integer
-    async def download_image_to_cache(self, item_id: str, size_px: int = 0) -> bool:
+    def download_image_to_cache(self, item_id: str, size_px: int = 0) -> bool:
         """
         Downloads a specific pixel-width of an image to the local cache.
         If size_px is 0, downloads the original resolution.
@@ -152,14 +146,17 @@ class JellyfinBridge:
         if size_px > 0:
             url += f"?maxWidth={size_px}"
             
-        headers = {"X-Emby-Token": self.api_key}
+        headers = {
+            "X-Emby-Token": self.api_key,
+            "User-Agent": "JellyfinPythonBridge/1.0",
+        }
         
         try:
-            async with self.client.stream("GET", url, headers=headers) as response:
-                if response.status_code == 200:
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
                     with open(cache_path, 'wb') as f:
-                        async for chunk in response.aiter_bytes():
-                            f.write(chunk)
+                        f.write(response.read())
                     return True
         except Exception as e:
             print(f"Error downloading image {item_id} (Size: {size_px}px): {e}")
@@ -170,10 +167,10 @@ class JellyfinBridge:
         """Returns the direct stream URL for a track."""
         return f"{self.server_url}/Audio/{track_id}/stream?api_key={self.api_key}&static=true"
     
-    def get_lyrics(self, track: Track) -> dict:
+    def get_lyrics(self, track_id: str) -> dict:
         jf_unsynced = None
         try:
-            res = self._request("GET", f"/Audio/{track.id}/Lyrics")
+            res = self._request("GET", f"/Audio/{track_id}/Lyrics")
             if res and res.get("Lyrics"):
                 # Check if it has timestamps
                 if any("Start" in line for line in res["Lyrics"]):
@@ -183,7 +180,7 @@ class JellyfinBridge:
                             continue
                         # Jellyfin Start is in ticks (10,000,000 ticks = 1 second)
                         start_ms = line.get("Start", 0) / 10000.0
-                        parsed.append((start_ms, line.get("Text", "")))
+                        parsed.append({"time_ms": start_ms, "text": line.get("Text", "")})
                     if parsed:
                         return {"type": "synced", "lines": parsed}
                 else:
@@ -192,6 +189,8 @@ class JellyfinBridge:
             pass
         
         try:
+            track = Track.get_by_id(track_id)
+            
             query = urllib.parse.urlencode({
                 "track_name": track.title,
                 "artist_name": track.artist.name,
@@ -218,7 +217,7 @@ class JellyfinBridge:
                             secs = float(match.group(2))
                             text = match.group(3).strip()
                             if text:
-                                parsed.append((mins * 60000 + secs * 1000, text))
+                                parsed.append({"time_ms": mins * 60000 + secs * 1000, "text": text})
                     if parsed:
                         return {"type": "synced", "lines": parsed}
                         

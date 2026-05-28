@@ -3,12 +3,22 @@
   import FooterPlayer from "$lib/components/FooterPlayer.svelte";
   import QueuePanel from "$lib/components/right-panels/QueuePanel.svelte";
   import { IconLibraryFilled, IconPlaylistFilled } from "@tabler/icons-svelte";
-  import { onMount } from "svelte";
-  import { playerState } from "$lib/store";
+  import { onDestroy, onMount } from "svelte";
+  import { playerState, queuePanelActive } from "$lib/store";
   import { apiUrl, wsUrl } from "$lib/backend";
 
+  let ws: WebSocket | null = null;
+  let currentFetchController: AbortController | null = null;
+
   onMount(() => {
-    const ws = new WebSocket(wsUrl("/ws/playback"));
+    ws = new WebSocket(wsUrl("/ws/playback"));
+    const handlePlayerCommand = (event: Event) => {
+      const e = event as CustomEvent<{ action: string; value?: unknown }>;
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(e.detail));
+      }
+    };
+
     ws.onmessage = (event) => {
       const incomingState = JSON.parse(event.data);
 
@@ -18,12 +28,20 @@
       }));
     };
 
-    window.addEventListener("player-command", (event) => {
-      const e = event as CustomEvent<{ action: string; value?: unknown }>;
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(e.detail));
-      }
-    });
+    window.addEventListener("player-command", handlePlayerCommand);
+
+    return () => {
+      window.removeEventListener("player-command", handlePlayerCommand);
+      ws?.close();
+      ws = null;
+    };
+  });
+
+  onDestroy(() => {
+    currentFetchController?.abort();
+    currentFetchController = null;
+    ws?.close();
+    ws = null;
   });
 
   let currentTrackId = "";
@@ -35,23 +53,39 @@
 
   async function fetchColors(albumId: string | number | null | undefined) {
     if (!albumId) return;
+
+    currentFetchController?.abort();
+    const controller = new AbortController();
+    currentFetchController = controller;
+
     try {
-      const res = await fetch(apiUrl(`/api/album/${albumId}/accent-colors`));
+      const res = await fetch(apiUrl(`/api/album/${albumId}/accent-colors`), {
+        signal: controller.signal,
+      });
       if (!res.ok) throw new Error("No colors found");
 
+      if (controller.signal.aborted) return;
+
       const colors = await res.json();
+      if (controller.signal.aborted) return;
+
       if (colors && colors.length > 0) {
         // Safely update ONLY accent_colors
         playerState.update((state) => ({
           ...state,
-          accent_colors: [`${colors[0]}`, `${colors[1]}`],
+          accent_colors: [`${colors[0]}`, `${colors[1]}`, `${colors[2]}`],
         }));
       }
     } catch (e) {
+      if (controller.signal.aborted) return;
       // Safely update fallback colors
       playerState.update((state) => ({
         ...state,
-        accent_colors: ["rgb(59, 130, 246)", "rgb(255, 255, 255)"],
+        accent_colors: [
+          "rgb(59, 130, 246)",
+          "rgb(255, 255, 255)",
+          "rgb(100, 100, 100)",
+        ],
       }));
     }
   }
@@ -84,7 +118,7 @@
     </nav>
   </aside> -->
 
-  <div class="flex-1 flex relative overflow-hidden">
+  <div class="flex-1 flex relative overflow-x-auto">
     <main class="flex-1 overflow-y-auto">
       <slot />
     </main>
@@ -94,7 +128,9 @@
     </div>
   </div>
 
-  <aside class="hidden xl:flex w-80 bg-zinc-900 border-l border-white/5">
-    <QueuePanel />
-  </aside>
+  {#if $queuePanelActive}
+    <aside class="flex transition-all duration-500 m-2 rounded-xl bg-zinc-900 w-80 border border-white/5 z-10">
+      <QueuePanel />
+    </aside>
+  {/if}
 </div>

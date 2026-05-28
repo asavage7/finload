@@ -1,4 +1,6 @@
 # src-backend/main.py
+from time import time
+
 from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -81,16 +83,34 @@ def get_artists():
     return [{"id": a.secondary_id, "name": a.name} for a in artists]
 
 @app.get("/api/albums")
-def get_albums():
-    albums = Album.select(Album, Artist).join(Artist)
+def get_albums(sort_by: str = "title"):
+    albums = Album.select(Album, Artist).join(Artist).order_by(getattr(Album, sort_by).asc())
     return [
         {
             "id": str(a.id), 
             "title": str(a.title), 
-            "artist_name": str(a.artist.name)
+            "artist_name": str(a.artist.name),
+            "duration_ms": sum(t.duration_ms for t in Track.select().where(Track.album == a.id))
         } 
         for a in albums
     ]
+    
+@app.get("/api/tracks")
+def get_tracks(sort_by: str = "title"):
+    start_time = time()
+    tracks = Track.select(Track, Album, Artist).join(Album).join(Artist).order_by(getattr(Track, sort_by).asc())
+    return [
+        {
+            "id": str(t.id), 
+            "album_id": str(t.album.id),
+            "title": str(t.title), 
+            "artist_name": str(t.artist.name),
+            "album_title": str(t.album.title),
+            "duration_ms": t.duration_ms
+        } 
+        for t in tracks
+    ]
+    print(f"Fetched tracks in {time() - start_time:.2f} seconds")
     
 def calculate_brightness(rgb) -> float:
     return (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255.0
@@ -101,7 +121,7 @@ def calculate_saturation(rgb) -> float:
     mn = min(r, g, b)
     if mx == mn:
         return 0
-    return (mx - mn) / (mx)
+    return (mx - mn) / (mx) * max(1, calculate_brightness(rgb) * 1.25)
 
 def rgb_to_hex(rgb):
     return '#{:02x}{:02x}{:02x}'.format(*rgb)
@@ -145,59 +165,55 @@ def get_album_details(album_id: str):
     
 @app.get("/api/album/{album_id}/accent-colors")
 def get_album_accent_colors(album_id: str):
-        cache_path = os.path.join(bridge.cache_dir, f"{album_id}_400.jpg")
-        accent_hex, light_primary, dark_primary = None, None, None
+    # Track time for performance debugging
+    start_time = time()
+    
+    cache_path = os.path.join(bridge.cache_dir, f"{album_id}_400.jpg")
+    to_hex = lambda rgb: "#{:02x}{:02x}{:02x}".format(*rgb)
+    
+    if not os.path.exists(cache_path):
+        return {"error": "Image not found"}
         
-        if os.path.exists(cache_path):
-            try:
-                color_thief = ColorThief(cache_path)
-                pallete = color_thief.get_palette(color_count=15)
-                for rgb in pallete:
-                    brightness = calculate_brightness(rgb)
-                    saturation = calculate_saturation(rgb)
-                    if (brightness > 0.25 and brightness < 0.6 and saturation > 0.5) or (brightness > 0.3 and brightness < 0.5 and saturation > 0.4) and not accent_hex:
-                        accent_hex = rgb_to_hex(rgb)
-                    if brightness > 0.7 and brightness < 0.9 and not light_primary:
-                        light_primary = rgb_to_hex(rgb)
-                    elif brightness < 0.4 and brightness > 0.05 and not dark_primary:
-                        dark_primary = rgb_to_hex(rgb)
-                    if accent_hex and light_primary and dark_primary:
-                        break
-                    
-                def adjust_color(hex_color, factor):
-                    hex_color = hex_color.lstrip('#')
-                    rgb = [int(hex_color[i:i+2], 16) for i in (0, 2, 4)]
-                    new_rgb = [max(0, min(255, int(c * factor))) for c in rgb]
-                    return rgb_to_hex(new_rgb)
-                
-                def flatten_color(rgb):
-                    brightness = calculate_brightness(rgb)
-                    if brightness > 0.6:
-                        return adjust_color(rgb_to_hex(rgb), 0.7)
-                    elif brightness < 0.2:
-                        return adjust_color(rgb_to_hex(rgb), 1.2)
-                    return rgb_to_hex(rgb)
-
-                if not accent_hex:
-                    for rgb in pallete:
-                        if calculate_brightness(rgb) > 0.2 and calculate_brightness(rgb) < 0.6:
-                            accent_hex = rgb_to_hex(rgb)
-                            break
-                    accent_hex = accent_hex or flatten_color(pallete[0]) # Fallback to the first color if no suitable accent found
-
-                if not light_primary:
-                    light_primary = adjust_color(accent_hex, 1.5)
-
-                if not dark_primary:
-                    dark_primary = adjust_color(accent_hex, 0.5)
-
-                return [accent_hex, light_primary, dark_primary]
-                
-            except Exception as e:
-                print(f"Color extraction skipped: {e}")
+    try:
+        palette = ColorThief(cache_path).get_palette(color_count=15, quality=25)
+        print(f"Extracted palette for album {album_id}: {palette}")
+        
+        def calculate_score(rgb, index):
+            saturation = calculate_saturation(rgb)
+            brightness_penalty = calculate_brightness(rgb) < 0.3
+            score = (15 / ((index + 1))) + (60 * saturation) - (brightness_penalty * 20)
+            print(f"Color: {str(rgb):>20}, Saturation: {saturation:.2f}, Brightness: {calculate_brightness(rgb):.2f},  Brightness Penalty: {brightness_penalty}, Score: {score:.2f}")
+            return score
+        
+        accent = list(max(palette, key=lambda c: calculate_score(c, palette.index(c))))
+        
+        def get_contrast(rgb):
+            lum = sum(w * (c/3294.6 if c <= 10 else ((c/255 + 0.055)/1.055)**2.4) 
+                      for c, w in zip(rgb, [0.2126, 0.7152, 0.0722]))
+            return 1.05 / (lum + 0.05)
+        
+        while get_contrast(accent) < 4.5:
+            accent = [int(c * 0.9) for c in accent]
+            
+        # Find the most prominent light and dark colors for primary/background use, ensuring good contrast with the accent
+        light_candidates = [c for c in sorted(palette, key=lambda c: calculate_score(c, palette.index(c)), reverse=True) if calculate_brightness(c) > 0.75]
+        if light_candidates:
+            light_primary = [int(c1) for c1 in light_candidates[0]]
+        else:
+            light_primary = [int(c1 * 1.5) for c1 in accent]
+        
+        dark_primary = [int(c1 * 0.2) for c1 in accent]
+        
+        print(f"Accent: {accent}, Light Primary: {light_primary}, Dark Primary: {dark_primary}")
+        print(f"Color extraction for album {album_id} took {time() - start_time:.2f} seconds")
+        return [to_hex(accent), to_hex(light_primary), to_hex(dark_primary)]
+        
+    except Exception as e:
+        print(f"Color extraction skipped: {e}")
+        return {"error": str(e)}
     
 @app.get("/api/image/{item_id}")
-async def get_image(item_id: str, size: int = 0):
+def get_image(item_id: str, size: int = 0, type: str = "album"):
     """
     Returns an image. Accepts an optional ?size=400 query parameter for width in pixels.
     size=0 returns the original image.
@@ -211,18 +227,31 @@ async def get_image(item_id: str, size: int = 0):
     if os.path.exists(cache_path):
         return FileResponse(cache_path)
         
-    success = await bridge.download_image_to_cache(item_id, size)
+    success = bridge.download_image_to_cache(item_id, size)
     
     if success and os.path.exists(cache_path):
         return FileResponse(cache_path)
+    if not success and type == "track":
+        album_id = Track.get_or_none(Track.id == item_id).album.id
+        cache_path = os.path.join(bridge.cache_dir, f"{album_id}_{suffix}.jpg")
+        
+        if os.path.exists(cache_path):
+            return FileResponse(cache_path)
+        
+        success = bridge.download_image_to_cache(album_id, size)
+        if success and os.path.exists(cache_path):
+            return FileResponse(cache_path)
         
     raise HTTPException(status_code=404, detail="Image not found")
 
-
 @app.post("/api/playback/play_track/{track_id}")
 def play_track(track_id: str):
-    playback.play_now(track_id)
+    playback.play_now(track_id, context_ids=[track_id])
     return {"status": "success"}
+
+@app.get("/api/album/{track_id}/lyrics")
+def get_album_lyrics(track_id: str):
+    return bridge.get_lyrics(track_id)
 
 @app.post("/api/playback/play_album/{album_id}")
 def play_album(album_id: str, track_id: str | None = None):
