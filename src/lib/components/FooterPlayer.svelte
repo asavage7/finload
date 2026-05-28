@@ -75,7 +75,7 @@
       <span class="text-sm mb-0.5 font-bold truncate">
         {$playerState.current_track?.title || "No Track Playing"}
       </span>
-      <div class="text-xs mb-1.5 text-zinc-400 truncate z-10">
+      <div class="text-xs mb-1.5 text-white/60 truncate z-10">
         <a href={`/artist/${$playerState.current_track?.artist_id}`} class="hover:underline hover:text-white">
           {$playerState.current_track?.artist_name || "Unknown Artist"}
         </a>
@@ -106,7 +106,7 @@
       <button
         on:click={togglePause}
         class="p-2 rounded-full transition-all duration-500 border border-white/10"
-        style="background-color: {$playerState.accent_colors[0]}"
+        style="background-color: {$playerState.accent_colors[0]};"
       >
         {#if $playerState.is_paused}
           <IconPlayerPlayFilled size={20} />

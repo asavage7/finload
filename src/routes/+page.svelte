@@ -90,7 +90,7 @@
     </div>
 
     <div
-      class="flex gap-1 bg-zinc-900/80 p-1 rounded-full border border-white/5"
+      class="absolute left-1/2 -translate-x-1/2 flex items-center gap-1 bg-zinc-900/80 p-1 rounded-full border border-white/5"
     >
       {#each tabs as tab}
         <button

@@ -13,9 +13,10 @@ A sleek and easy to use Jellyfin music player, with the goal to provide a more S
 
 - Library views for albums and artists
 - Detail page for albums
-- Play albums/tracks
+- Playback of both albums and individual tracks
 - Gapless playback
-- Queue panel with proper track switching and removal
+- View song queue and lyrics
+- Fullscreen "Now Playing" page
 
 ### To Be Implemented:
 
@@ -26,8 +27,8 @@ A sleek and easy to use Jellyfin music player, with the goal to provide a more S
 - Shuffle/repeat playback modes
 - Adding tracks/albums to queue
 - Proper Jellyfin sync
-- Virtual scroll for library page
-- History/Lyrics pages in queue panel
+- Virtual scroll for library page (done for list view but not grid view)
+- History page in queue panel
 - Search
 - Ratings system (implemented in UI but not functional)
 - Implement other media sources
@@ -36,9 +37,7 @@ A sleek and easy to use Jellyfin music player, with the goal to provide a more S
 
 ## Known issues
 
-- Queue panel only opens on larger screens; this is intentional but needs changed
 - Clearing the whole queue is not implemented
-- Album art can disappear on some albums when switching between albums/artist views
 - MPV player state can sometimes desync from frontend
 - Hitbox for seeking is slightly higher than intended
 

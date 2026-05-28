@@ -152,7 +152,7 @@
             </div>
         </header>
 
-        <div slot="content" class="text-zinc-400 w-full max-w-6xl mx-auto">
+        <div slot="content" class="text-zinc-400 w-full max-w-6xl mx-auto pb-28">
             {#each discs as disc}
                 {#if showDiscLabels}
                     <div
@@ -190,13 +190,14 @@
                         <!-- svelte-ignore a11y_click_events_have_key_events -->
                         <div
                             on:click={() => playTrack(track.id)}
-                            class="flex items-center px-4 md:px- py-2.5 hover:bg-white/5 group transition duration-200 gap-4 border-b border-white/10 first:border-t cursor-pointer"
+                            class="flex items-center px-4 py-2.5 hover:bg-white/5 group transition duration-200 gap-4 border-b border-white/10 first:border-t cursor-pointer"
                         >
                             <div
                                 class="w-6 h-6 flex items-center justify-center relative"
                             >
                                 <div
-                                    class="absolute -inset-0 flex items-center justify-center text-zinc-400 opacity-100 group-hover:opacity-0 transition-opacity duration-200 text-xs"
+                                    class="absolute -inset-0 flex items-center justify-center opacity-100 group-hover:opacity-0 transition-opacity duration-200 text-xs"
+                                    style="color: {albumData.accent_colors[1]}"
                                 >
                                     {track.track_number || index + 1}
                                 </div>

@@ -2,7 +2,8 @@
   import "../app.css";
   import FooterPlayer from "$lib/components/FooterPlayer.svelte";
   import QueuePanel from "$lib/components/right-panels/QueuePanel.svelte";
-  import { IconLibraryFilled, IconPlaylistFilled } from "@tabler/icons-svelte";
+  import { slide } from "svelte/transition";
+  import { cubicOut } from "svelte/easing";
   import { onDestroy, onMount } from "svelte";
   import { playerState, queuePanelActive } from "$lib/store";
   import { apiUrl, wsUrl } from "$lib/backend";
@@ -119,7 +120,7 @@
   </aside> -->
 
   <div class="flex-1 flex relative overflow-x-auto">
-    <main class="flex-1 overflow-y-auto">
+    <main class="flex-1 overflowz-auto">
       <slot />
     </main>
 
@@ -128,9 +129,13 @@
     </div>
   </div>
 
-  {#if $queuePanelActive}
-    <aside class="flex transition-all duration-500 m-2 rounded-xl bg-zinc-900 w-80 border border-white/5 z-10">
-      <QueuePanel />
-    </aside>
+{#if $queuePanelActive}
+    <div transition:slide={{ axis: 'x', duration: 150, easing: cubicOut }} class="overflow-hidden z-10 m-2">
+      
+      <div class="flex rounded-xl bg-zinc-900 w-80 h-full border border-white/5 transition-all duration-500">
+        <QueuePanel />
+      </div>
+      
+    </div>
   {/if}
 </div>
