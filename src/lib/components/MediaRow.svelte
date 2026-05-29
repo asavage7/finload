@@ -18,22 +18,20 @@
             await fetch(apiUrl(`/api/playback/play_album/${id}`), {
                 method: "POST",
             });
-        }
-        else if (type === "track") {
+        } else if (type === "track") {
             await fetch(apiUrl(`/api/playback/play_track/${id}`), {
                 method: "POST",
             });
         }
-
     }
 </script>
 
 <a
-    href="{type === 'track' ? `/album/${album_id}` : `/${type}/${id}`}"
+    href={type === "track" ? `/album/${album_id}` : `/${type}/${id}`}
     class="group flex gap-4 p-2 pr-4 rounded-xl hover:bg-white/5 border border-white/0 hover:border-white/10 transition duration-300 cursor-pointer items-center"
 >
     <div
-        class="relative w-12 h-12 overflow-hidden border border-white/5 bg-zinc-800 flex items-center justify-center {type ===
+        class="relative w-12 h-12 overflow-hidden border border-white/5 bg-zinc-800 flex shrink-0 items-center justify-center {type ===
         'artist'
             ? 'rounded-full'
             : 'rounded-md'}"
@@ -43,7 +41,7 @@
                 src={imageUrl}
                 alt={title}
                 on:error={() => (imageFailed = true)}
-                class="w-12 h-12 object-cover shadow-md lazyload rounded-md"
+                class="w-12 h-12 shrink-0object-cover shadow-md lazyload rounded-md"
             />
         {:else}
             <span class="text-4xl text-zinc-600 font-bold shadow-md">
@@ -73,8 +71,11 @@
             <div class="text-xs text-zinc-400 truncate w-full">{subtitle}</div>
         {/if}
     </div>
-    <Rating rating={3} size={12} />
-    {#if type !== "artist"}
-        <span class="w-16 text-right text-xs text-zinc-500">{duration}</span>
-    {/if}
+    <div class="flex items-center gap-1">
+        <Rating rating={3} size={12} />
+        {#if type !== "artist"}
+            <span class="w-16 text-right text-xs text-zinc-500">{duration}</span
+            >
+        {/if}
+    </div>
 </a>

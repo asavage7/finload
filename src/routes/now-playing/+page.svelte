@@ -25,34 +25,26 @@
     class="absolute inset-0 w-full object-cover blur-3xl opacity-25 scale-110 pointer-events-none z-0"
   />
   <div
-    class="mx-auto flex h-full w-full max-w-[2000px] items-center justify-between gap-12 pb-24 pt-4 z-10"
+    class="mx-auto flex flex-col text-center w-1/2 items-center pb-24 pt-4 z-10 gap-2"
   >
-    <div
-      class="flex h-full w-full flex-col max-h-[1000px] my-auto items-center justify-center p-4 gap-8"
-    >
-      <img
-        src={apiUrl(
-          `/api/image/${$playerState.current_track?.album_id || "default"}?size=2000`,
-        )}
-        alt="Current Track"
-        class="aspect-square m-auto object-cover rounded-2xl shadow-2xl border border-white/10 bg-zinc-800"
-      />
-      <div
-        class="flex w-full max-w-md flex-1 min-w-0 flex-col justify-center text-center"
-      >
-        <div class="truncate text-3xl font-bold">
-          {$playerState.current_track?.title || "No Track Playing"}
-        </div>
-        <div class="truncate text-xl text-zinc-400">
-          {$playerState.current_track?.artist_name || "Unknown Artist"} ∙ {$playerState.current_track?.album_name || "Unknown Album"}
-        </div>
-        <Rating rating={$playerState.current_track?.rating || 0} size={24} />
-      </div>
+    <img
+      src={apiUrl(
+        `/api/image/${$playerState.current_track?.album_id || "default"}?size=2000`,
+      )}
+      alt="Current Track"
+      class="aspect-square h-[75%] my-auto object-cover rounded-2xl shadow-2xl border border-white/10 bg-zinc-800 mb-8"
+    />
+    <div class="truncate text-3xl font-bold">
+      {$playerState.current_track?.title || "No Track Playing"}
     </div>
-    <div
-      class="flex h-full w-full max-w-2xl mx-auto justify-center max-h-[1000px] overflow-hidden"
-    >
-      <QueuePanel />
+    <div class="truncate text-xl text-zinc-400 mb-8">
+      {$playerState.current_track?.artist_name || "Unknown Artist"} ∙ {$playerState
+        .current_track?.album_name || "Unknown Album"}
     </div>
+  </div>
+  <div
+    class="flex h-full w-1/2 max-w-2xl mx-auto justify-center overflow-hidden"
+  >
+    <QueuePanel />
   </div>
 </div>

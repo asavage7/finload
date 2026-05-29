@@ -90,6 +90,8 @@ def get_albums(sort_by: str = "title"):
             "id": str(a.id), 
             "title": str(a.title), 
             "artist_name": str(a.artist.name),
+            "artist_id": str(a.artist.secondary_id) if a.artist else None,
+            "release_year": a.release_year,
             "duration_ms": sum(t.duration_ms for t in Track.select().where(Track.album == a.id))
         } 
         for a in albums
@@ -156,6 +158,7 @@ def get_album_details(album_id: str):
                 "id": album.id,
                 "title": album.title,
                 "artist_name": album.artist.name if album.artist else "Unknown Artist",
+                "artist_id": album.artist.secondary_id if album.artist else None,
                 "release_year": album.release_year,
             },
             "discs": discs_list
@@ -163,12 +166,12 @@ def get_album_details(album_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
-@app.get("/api/album/{album_id}/accent-colors")
-def get_album_accent_colors(album_id: str):
-    # Track time for performance debugging
-    start_time = time()
+@app.get("/api/{item_id}/accent-colors")
+def get_accent_colors(item_id: str, debug: bool = False):
+    if debug:
+        start_time = time()
     
-    cache_path = os.path.join(bridge.cache_dir, f"{album_id}_400.jpg")
+    cache_path = os.path.join(bridge.cache_dir, f"{item_id}_400.jpg")
     to_hex = lambda rgb: "#{:02x}{:02x}{:02x}".format(*rgb)
     
     if not os.path.exists(cache_path):
@@ -176,13 +179,15 @@ def get_album_accent_colors(album_id: str):
         
     try:
         palette = ColorThief(cache_path).get_palette(color_count=15, quality=25)
-        print(f"Extracted palette for album {album_id}: {palette}")
+        if debug:
+            print(f"Extracted palette for album {item_id}: {palette}")
         
         def calculate_score(rgb, index):
             saturation = calculate_saturation(rgb)
             brightness_penalty = calculate_brightness(rgb) < 0.3
             score = (15 / ((index + 1))) + (60 * saturation) - (brightness_penalty * 20)
-            print(f"Color: {str(rgb):>20}, Saturation: {saturation:.2f}, Brightness: {calculate_brightness(rgb):.2f},  Brightness Penalty: {brightness_penalty}, Score: {score:.2f}")
+            if debug:
+                print(f"Color: {str(rgb):>20}, Saturation: {saturation:.2f}, Brightness: {calculate_brightness(rgb):.2f},  Brightness Penalty: {brightness_penalty}, Score: {score:.2f}")
             return score
         
         accent = list(max(palette, key=lambda c: calculate_score(c, palette.index(c))))
@@ -203,14 +208,50 @@ def get_album_accent_colors(album_id: str):
             light_primary = [int(c1 * 1.5) for c1 in accent]
         
         dark_primary = [int(c1 * 0.2) for c1 in accent]
-        
-        print(f"Accent: {accent}, Light Primary: {light_primary}, Dark Primary: {dark_primary}")
-        print(f"Color extraction for album {album_id} took {time() - start_time:.2f} seconds")
+        if debug:
+            print(f"Accent: {accent}, Light Primary: {light_primary}, Dark Primary: {dark_primary}")
+            print(f"Color extraction for {item_id} took {time() - start_time:.2f} seconds")
         return [to_hex(accent), to_hex(light_primary), to_hex(dark_primary)]
         
     except Exception as e:
         print(f"Color extraction skipped: {e}")
         return {"error": str(e)}
+    
+@app.get("/api/album/{album_id}/accent-colors")
+def get_album_accent_colors(album_id: str):
+    return get_accent_colors(album_id)
+
+@app.get("/api/track/{track_id}/accent-colors")
+def get_track_accent_colors(track_id: str):
+    return get_accent_colors(track_id)
+
+@app.get("/api/artist/{artist_id}/accent-colors")
+def get_artist_accent_colors(artist_id: str):
+    return get_accent_colors(artist_id)
+
+@app.get("/api/artist/{artist_id}")
+def get_artist_details(artist_id: str):
+    artist = Artist.get_or_none(Artist.secondary_id == artist_id)
+    if not artist:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    return {
+        "artist": {
+            "id": artist.secondary_id,
+            "name": artist.name,
+            "albums_count": Album.select().where(Album.artist == artist.id).count(),
+            "tracks_count": Track.select().where(Track.artist == artist.id).count(),
+            "total_duration_ms": sum(t.duration_ms for t in Track.select().where(Track.artist == artist.id))
+        },
+        "albums": [
+            {
+                "id": str(a.id), 
+                "title": str(a.title), 
+                "duration_ms": sum(t.duration_ms for t in Track.select().where(Track.album == a.id)),
+                "release_year": a.release_year
+            } 
+            for a in Album.select().where(Album.artist == artist.id).order_by(Album.release_year.desc())
+        ]
+    }
     
 @app.get("/api/image/{item_id}")
 def get_image(item_id: str, size: int = 0, type: str = "album"):

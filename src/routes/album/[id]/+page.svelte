@@ -3,6 +3,7 @@
     import { page } from "$app/state"; // In Svelte 5, this gives us URL parameters
     import ViewLayout from "$lib/components/ViewLayout.svelte";
     import Rating from "$lib/components/Rating.svelte";
+    import Loading from "$lib/components/Loading.svelte";
     import {
         IconPlayerPlayFilled,
         IconArrowsShuffle,
@@ -66,7 +67,7 @@
 </script>
 
 {#if isLoading}
-    <div class="p-8 text-zinc-500 animate-pulse">Loading Album...</div>
+    <Loading />
 {:else if albumData}
     <ViewLayout>
         <header

@@ -12,7 +12,7 @@ A sleek and easy to use Jellyfin music player, with the goal to provide a more S
 ## Features
 
 - Library views for albums and artists
-- Detail page for albums
+- Detail page for albums and (WIP) artists
 - Playback of both albums and individual tracks
 - Gapless playback
 - View song queue and lyrics

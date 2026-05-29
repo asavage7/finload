@@ -4,6 +4,7 @@
   import ViewLayout from "$lib/components/ViewLayout.svelte";
   import MediaCard from "$lib/components/MediaCard.svelte";
   import MediaRow from "$lib/components/MediaRow.svelte";
+  import Loading from "$lib/components/Loading.svelte";
   import { apiUrl } from "$lib/backend";
   import { formatTime } from "$lib/utils/formatTime";
   import {
@@ -14,15 +15,12 @@
     IconMicrophoneFilled,
     IconPlaylistFilled,
     IconDiscFilled,
+    IconPlayerPlayFilled,
+    IconArrowsShuffle,
   } from "@tabler/icons-svelte";
 
-  const tabs = ["Albums", "Tracks", "Artists", "Playlists"];
-  const tabicons = [
-    IconDiscFilled,
-    IconTrack,
-    IconMicrophoneFilled,
-    IconPlaylistFilled,
-  ];
+  const tabs = ["Albums", "Tracks", "Artists"];
+  const tabicons = [IconDiscFilled, IconTrack, IconMicrophoneFilled];
 
   let activeTab = "Albums";
   let activeView: Record<string, string> = {
@@ -33,6 +31,7 @@
   };
   let items: any[] = [];
   let loadError = "";
+  let isLoading = true;
   let scrollContainer: HTMLDivElement | null = null;
 
   function getCardType(tab: string): "artist" | "album" | "playlist" | "track" {
@@ -54,6 +53,7 @@
   async function loadData(tab: string) {
     activeTab = tab;
     loadError = "";
+    isLoading = true;
 
     try {
       const res = await fetch(apiUrl(`/api/${tab.toLowerCase()}`));
@@ -67,6 +67,8 @@
       loadError =
         "Backend unavailable. Start the backend dev server and refresh.";
       console.error(`Failed to load ${tab.toLowerCase()}:`, error);
+    } finally {
+      isLoading = false;
     }
   }
 
@@ -130,9 +132,9 @@
   <div slot="content" class="w-full h-full flex flex-col min-h-0">
     {#if loadError}
       <div class="px-4 pt-2 text-sm text-amber-300">{loadError}</div>
-    {/if}
-
-    {#if activeView[activeTab] === "grid"}
+    {:else if isLoading}
+      <Loading />
+    {:else if activeView[activeTab] === "grid"}
       <div
         class="px-4 pt-4 pb-28 overflow-y-auto grid gap-2 w-full grid-cols-[repeat(auto-fill,minmax(180px,1fr))] xl:grid-cols-[repeat(auto-fill,minmax(200px,1fr))]"
       >
@@ -141,12 +143,41 @@
             id={item.id}
             title={item.name || item.title}
             subtitle={item.artist_name}
-            imageUrl={apiUrl(`/api/image/${item.id}?size=400&type=${getCardType(activeTab)}`)}
+            imageUrl={apiUrl(
+              `/api/image/${item.id}?size=400&type=${getCardType(activeTab)}`,
+            )}
             type={getCardType(activeTab)}
+            subtitleLink={
+              activeTab === "Albums" && item.artist_id
+                ? `/artist/${item.artist_id}`
+                : ""
+            }
           />
         {/each}
       </div>
     {:else}
+      {#if activeTab === "Tracks"}
+        <div
+          class="flex items-center gap-2 py-3 px-4 justify-between border-b border-white/10"
+        >
+          <span>{items.length} tracks</span>
+          <div class="flex items-center gap-3">
+            <button
+              on:click={() => history.back()}
+              class="flex items-center gap-2 py-2 px-4 rounded-full bg-blue-500 text-white border border-white/10 cursor-pointer transition"
+            >
+              <IconPlayerPlayFilled size={16} />
+              Play All
+            </button>
+            <button
+              on:click={() => history.back()}
+              class="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer transition"
+            >
+              <IconArrowsShuffle size={16} />
+            </button>
+          </div>
+        </div>
+      {/if}
       <div class="flex-1 w-full min-h-0 flex flex-col">
         <div
           bind:this={scrollContainer}
@@ -167,7 +198,9 @@
                     album_id={item.album_id || ""}
                     title={item.name || item.title}
                     subtitle={item.artist_name}
-                    imageUrl={apiUrl(`/api/image/${item.id}?size=48&type=${getCardType(activeTab)}`)}
+                    imageUrl={apiUrl(
+                      `/api/image/${item.id}?size=48&type=${getCardType(activeTab)}`,
+                    )}
                     type={getCardType(activeTab)}
                     duration={formatTime(item.duration_ms / 1000)}
                   />
