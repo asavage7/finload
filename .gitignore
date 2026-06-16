@@ -1,4 +1,5 @@
 .DS_Store
+PLANNING.md
 node_modules
 /build
 /.svelte-kit

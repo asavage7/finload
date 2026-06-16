@@ -8,6 +8,8 @@
 @theme {
 	--font-sans: "Lato", "ui-sans-serif", "system-ui", sans-serif;
 	--font-mono: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", monospace;
+	--breakpoint-6xl: 72rem; /* 1152px */
+	--breakpoint-7xl: 80rem; /* 1280px */
 }
 
 html,

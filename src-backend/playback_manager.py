@@ -223,11 +223,11 @@ class PlaybackManager:
         self.prepare_next()
         self.broadcast_state()
 
-    def add_to_queue(self, track_ids):
+    def add_to_queue(self, track_ids, index=-1):
         """Inserts songs at the end of the user-curated queue (before the Mix)."""
         # Find the last item that ISN'T the infinite mix (type 2)
         last_curated = QueueItem.select().where(QueueItem.queue_type <= 1).order_by(QueueItem.position.desc()).first()
-        insert_pos = (last_curated.position + 1) if last_curated else 0
+        insert_pos = index if index != -1 else ((last_curated.position + 1) if last_curated else 0)
         amt = len(track_ids)
 
         with db.atomic():

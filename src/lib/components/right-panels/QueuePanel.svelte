@@ -205,7 +205,7 @@
                         <button
                             on:click|preventDefault|stopPropagation={() =>
                                 dispatch("remove_from_queue", item.id)}
-                            class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 text-white bg-white/10 rounded-full cursor-pointer"
+                            class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 text-white bg-white/10 border border-white/10 rounded-full cursor-pointer shadow-md"
                         >
                             <IconXFilled size={16} />
                         </button>

@@ -1,7 +1,7 @@
 # src-backend/main.py
 from time import time
 
-from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from database import DatabaseManager, Artist, Album, Track, QueueItem
@@ -319,6 +319,24 @@ def skip_next():
 @app.post("/api/playback/prev")
 def skip_prev():
     playback.skip_prev()
+    return {"status": "success"}
+
+@app.post("/api/playback/add_to_queue/")
+def add_to_queue(
+    # Body(...) means this field is required in the JSON
+    track_id: str | list[str] = Body(...), 
+    # Body(-1) means look in the JSON, but default to -1 if missing
+    index: int = Body(-1)
+):
+    # Standardize to a list
+    tracks = [track_id] if isinstance(track_id, str) else track_id
+    
+    playback.add_to_queue(tracks, index)
+    return {"status": "success"}
+
+@app.post("/api/playback/remove_from_queue/{queue_item_id}")
+def remove_from_queue(queue_item_id: str):
+    playback.remove_from_queue(queue_item_id)
     return {"status": "success"}
 
 @app.post("/api/playback/jump_to_queue_item/{queue_item_id}")

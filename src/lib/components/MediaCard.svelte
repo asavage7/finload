@@ -1,20 +1,20 @@
 <script lang="ts">
   import { IconPlayerPlayFilled } from "@tabler/icons-svelte";
   import { apiUrl } from "$lib/backend";
-  import { playerState } from "$lib/store";
+  import ContextMenu from "./ContextMenu.svelte";
 
   export let id: string;
   export let title: string;
   export let subtitle: string = ""; // Optional (e.g., Artist name for an album)
+  export let subtitleHref: string = ""; // Optional link for the subtitle (e.g., artist page)
   export let imageUrl: string = "";
   export let type: "artist" | "album" | "playlist" = "artist"; // Determines the link
-  export let subtitleLink: string = ""; // Optional URL for subtitle (e.g., artist page for an album)
 
-  let accentColors: string[] = ["#ffffff","4654ad","#000000"]; // Default accent color
+  let open = false;
+
+  let accentColors: string[] = ["rgba(255,255,255,0.1)", "#4654ad", "#000000"]; // Default accent color
   let accentColorLoaded = false;
   let accentColorLoading = false;
-  const subtitleClass = "text-xs text-zinc-400 truncate w-full hover:text-white hover:underline transition-all";
-
   let imageFailed = false;
 
   function itemHref() {
@@ -82,10 +82,31 @@
       >
         <button
           on:click|preventDefault|stopPropagation={playItem}
-          class="p-3 text-white rounded-full flex items-center justify-center shadow-md border border-white/10 cursor-pointer" style="background-color: {accentColors[0]};"
+          class="p-3 text-white rounded-full flex items-center justify-center shadow-md border border-white/10 cursor-pointer backdrop-blur-xl transition-all"
+          style="background-color: {accentColors[0]}; border-color: {accentColors[1]}33;"
         >
           <IconPlayerPlayFilled size={24} />
         </button>
+        <div class="absolute bottom-2 right-2 pointer-events-auto">
+          <button on:click|preventDefault|stopPropagation={() => (open = !open)}
+            >...</button
+          >
+
+          {#if open}
+            <ContextMenu
+              menu_items={[
+                {
+                  label: "Play",
+                  icon: "play",
+                  action: playItem,
+                  enabled: true,
+                },
+              ]}
+              class="absolute top-full right-0 mt-2 z-50"
+              on:close={() => (open = false)}
+            />
+          {/if}
+        </div>
       </div>
     {/if}
   </div>
@@ -95,7 +116,16 @@
       {title || "Unknown"}
     </div>
     {#if subtitle}
-      <div class="text-xs text-zinc-400 truncate w-full">{subtitle}</div>
+      {#if subtitleHref}
+        <button
+          on:click|preventDefault|stopPropagation={() => (window.location.href = subtitleHref)}
+          class="text-xs text-zinc-400 hover:text-white hover:underline transition bg-none border-none p-0 m-0 cursor-pointer"
+        >
+          {subtitle}
+        </button>
+      {:else}
+        <div class="text-xs text-zinc-400 truncate w-full">{subtitle}</div>
+      {/if}
     {/if}
   </div>
 </a>

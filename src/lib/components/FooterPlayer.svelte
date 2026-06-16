@@ -56,7 +56,8 @@
   <div class="flex items-center gap-4 w-1/3">
     <a class="relative flex items-center group" href={`/now-playing`}>
       <div
-        class="absolute inset-0 bg-black/30 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+        class="absolute inset-0 rounded-lg opacity-0 group-hover:opacity-100 backdrop-blur-[4px] transition-opacity duration-200"
+        style="background-color: {$playerState.accent_colors[2]}33;"
       >
         <IconPictureInPictureFilled
           size={24}
@@ -68,7 +69,8 @@
           `/api/image/${$playerState.current_track?.album_id || "default"}?size=62`,
         )}
         alt="Current Track"
-        class="w-16 h-16 object-cover rounded-lg border border-white/10 bg-zinc-800"
+        class="w-16 h-16 object-cover rounded-lg border bg-zinc-800"
+        style="border-color: {$playerState.accent_colors[1]}33;"
       />
     </a>
     <div class="flex flex-col gap-0 justify-center min-w-0 flex-1">

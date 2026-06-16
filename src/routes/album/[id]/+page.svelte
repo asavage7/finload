@@ -62,6 +62,17 @@
         );
     }
 
+async function addTrackToQueue(trackInput: string | string[]) {
+    await fetch(`/api/playback/add_to_queue/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+            track_id: trackInput 
+            // index is omitted, so FastAPI uses the default -1
+        }), 
+    });
+}
+
     $: showDiscLabels =
         discs.length > 1 || (discs.length === 1 && discs[0]?.disc_number !== 1);
 </script>
@@ -72,7 +83,7 @@
     <ViewLayout>
         <header
             slot="header"
-            class="relative w-full flex items-end p-8 bg-gradient-to-b from-zinc-800/40 to-zinc-950 pt-18"
+            class="relative w-full flex items-end md:px-8 pt-8 pb-2 md:pb-0 bg-gradient-to-b from-zinc-800/40 to-zinc-950 pt-18"
         >
             <img
                 src={apiUrl(`/api/image/${albumData.id}?size=800`)}
@@ -91,7 +102,7 @@
             </button>
 
             <div
-                class="relative z-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-full max-w-6xl mx-auto"
+                class="relative z-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-full max-w-6xl mx-auto pb-8 md:px-6 border-b border-white/10"
             >
                 <img
                     src={apiUrl(`/api/image/${albumData.id}?size=400`)}
@@ -109,9 +120,12 @@
                     >
                         {albumData.title}
                     </h1>
-                    <h3 class="text-md md:text-lg font-semibold text-zinc-400">
+                    <a
+                        href={`/artist/${encodeURIComponent(albumData.artist_id)}`}
+                        class="inline-block pb-0.5 text-md md:text-lg font-semibold text-zinc-400 hover:text-white hover:underline transition"
+                    >
                         {albumData.artist_name}
-                    </h3>
+                    </a>
                     <Rating
                         rating={3}
                         rated_color={albumData.accent_colors[1]}
@@ -124,7 +138,16 @@
                         <span>∙</span>
                         <span>{tracks.length} tracks</span>
                         <span>∙</span>
-                        <span>{formatTime(tracks.reduce((acc: number, track: any) => acc + track.duration_ms, 0),true)}</span>
+                        <span
+                            >{formatTime(
+                                tracks.reduce(
+                                    (acc: number, track: any) =>
+                                        acc + track.duration_ms,
+                                    0,
+                                ),
+                                true,
+                            )}</span
+                        >
                     </div>
                 </div>
 
@@ -153,14 +176,17 @@
             </div>
         </header>
 
-        <div slot="content" class="text-zinc-400 w-full max-w-6xl mx-auto pb-28">
+        <div
+            slot="content"
+            class="text-zinc-400 w-full max-w-6xl py-4 px-0 md:px-4 mx-auto pb-28"
+        >
             {#each discs as disc}
                 {#if showDiscLabels}
                     <div
-                        class="flex justify-between items-center text-zinc-400 font-bold py-2 px-4 md:px-4 md:pt-4 md:pb-0 sticky top-0 border-b md:border-none border-white/10 z-10"
+                        class="flex justify-between items-center text-zinc-400 font-bold py-2 px-4 md:px-4 md:pt-4 md:pb-0 sticky top-0 z-10"
                     >
                         <div>Disc {disc.disc_number}</div>
-                        <div>
+                        <div class="flex items-center gap-2">
                             <button
                                 on:click={() => history.back()}
                                 class="p-2 rounded-full text-white border border-white/10 cursor-pointer transition"
@@ -185,13 +211,13 @@
                     </div>
                 {/if}
 
-                <div class="mb-8 px-0 mt-0 md:mt-4">
+                <div class="mb-8 px-0 mt-0">
                     {#each disc.tracks as track, index}
                         <!-- svelte-ignore a11y_no_static_element_interactions -->
                         <!-- svelte-ignore a11y_click_events_have_key_events -->
                         <div
                             on:click={() => playTrack(track.id)}
-                            class="flex items-center px-4 py-2.5 hover:bg-white/5 group transition duration-200 gap-4 border-b border-white/10 first:border-t cursor-pointer"
+                            class="flex items-center pl-4 p-2.5 hover:bg-white/5 border md:hover:border-white/10 border-transparent group transition duration-200 gap-4 cursor-pointer md:rounded-full"
                         >
                             <div
                                 class="w-6 h-6 flex items-center justify-center relative"
@@ -223,12 +249,15 @@
                             </div>
 
                             <div class="flex gap-4 justify-end items-center">
-                                <div class="time-text text-xs right text-zinc-400 text-sm">
+                                <div
+                                    class="time-text text-xs right text-zinc-400 text-sm"
+                                >
                                     {formatTime(track.duration_ms, true)}
                                 </div>
                                 <button
-                                    on:click={() => playTrack(track.id)}
-                                    class="p-2 rounded-full hover:bg-white/10 transition text-zinc-400 hover:text-white"
+                                    on:click|preventDefault|stopPropagation={() =>
+                                        addTrackToQueue(track.id)}
+                                    class="p-2 rounded-full hover:bg-white/10 border hover:border-white/10 border-transparent transition text-white"
                                 >
                                     <IconMenu2Filled size={16} />
                                 </button>
@@ -242,3 +271,4 @@
 {:else}
     <div class="p-8 text-red-400">Album context not found.</div>
 {/if}
+r truncate w-full text-left

@@ -147,7 +147,7 @@
               `/api/image/${item.id}?size=400&type=${getCardType(activeTab)}`,
             )}
             type={getCardType(activeTab)}
-            subtitleLink={
+            subtitleHref={
               activeTab === "Albums" && item.artist_id
                 ? `/artist/${item.artist_id}`
                 : ""
