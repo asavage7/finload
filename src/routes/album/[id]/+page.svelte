@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { page } from "$app/state"; // In Svelte 5, this gives us URL parameters
+    import { afterNavigate } from "$app/navigation";
     import ViewLayout from "$lib/components/ViewLayout.svelte";
     import Rating from "$lib/components/Rating.svelte";
     import Loading from "$lib/components/Loading.svelte";
@@ -59,12 +60,25 @@
         discs.length > 1 || (discs.length === 1 && discs[0]?.disc_number !== 1);
 
     $: allTrackIds = tracks.map((t: any) => t.id);
+
+    // Optional `?track=<id>` focus: the matching row scrolls into view and the
+    // CSS `.track-flash` animation highlights it. Gated on navigation type so
+    // back/forward (popstate) never replays it — only a fresh visit does.
+    let focusTrackId: string | null = null;
+    afterNavigate(({ type }) => {
+        focusTrackId = type === "popstate" ? null : page.url.searchParams.get("track");
+    });
+
+    function scrollIntoViewIfFocused(node: HTMLElement, focused: boolean) {
+        if (focused)
+            node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
 </script>
 
 {#if isLoading}
     <Loading />
 {:else if albumData}
-    {@const blendedBg = blendHex(albumData.accent_colors[2], "#1c1c1f", 0.1)}
+    {@const blendedBg = blendHex(albumData.accent_colors[2], "#161616", 0.2)}
     <ViewLayout bgColor={blendedBg} accent={albumData.accent_colors}>
         <header
             slot="header"
@@ -75,7 +89,9 @@
                 alt=""
                 class="absolute inset-0 w-full h-full blur-[1080px] object-cover pointer-events-none transition-opacity duration-700"
                 style="opacity: {bgLoaded ? '0.25' : '0'}"
-                on:load={() => { bgLoaded = true; }}
+                on:load={() => {
+                    bgLoaded = true;
+                }}
             />
 
             <BackButton class="absolute top-4 left-4" />
@@ -90,7 +106,6 @@
                         class="w-full max-w-[40vh] md:w-55 md:h-55 mx-auto object-cover rounded-xl shadow-2xl border border-white/10 bg-zinc-800"
                     />
                 </div>
-
 
                 <div
                     class="flex-1 text-center md:text-left space-y-2 px-4 md:px-0"
@@ -210,11 +225,14 @@
 
                 <div class="mb-8 px-0 mt-0">
                     {#each disc.tracks as track, index}
+                        {@const focused = String(track.id) === focusTrackId}
                         <!-- svelte-ignore a11y_no_static_element_interactions -->
                         <!-- svelte-ignore a11y_click_events_have_key_events -->
                         <div
+                            use:scrollIntoViewIfFocused={focused}
                             on:click={() => playAlbumAtTrack(albumId, track.id)}
-                            class="flex items-center px-4 p-2 md:pr-2 hover:bg-white/5 group transition duration-200 gap-4 cursor-pointer md:rounded-full min-w-0"
+                            class:track-flash={focused}
+                            class="flex items-center px-4 p-2 md:pr-2 group transition duration-200 gap-4 cursor-pointer md:rounded-full min-w-0 hover:bg-white/5"
                         >
                             <div
                                 class="w-6 h-6 flex-shrink-0 flex items-center justify-center relative"
@@ -281,3 +299,18 @@
 {:else}
     <div class="p-8 text-red-400">Album not found.</div>
 {/if}
+
+<style>
+    .track-flash {
+        animation: track-flash 3s ease-out;
+    }
+    @keyframes track-flash {
+        0%,
+        70% {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        100% {
+            background-color: transparent;
+        }
+    }
+</style>

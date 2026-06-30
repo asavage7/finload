@@ -2,7 +2,7 @@
   import { playerState, queuePanelActive } from "$lib/store";
   import CoverImage from "$lib/components/CoverImage.svelte";
   import Rating from "$lib/components/Rating.svelte";
-  import QueuePanel from "$lib/components/player/QueuePanel.svelte";
+  import RightPanel from "$lib/components/panels/RightPanel.svelte";
   import BackButton from "$lib/components/ui/BackButton.svelte";
   import { getImageUrl } from "$lib/utils/media";
   import { slide } from "svelte/transition";
@@ -58,7 +58,7 @@
       transition:slide={{ axis: "x", duration: 150, easing: cubicOut }}
       class="flex h-full pb-16 w-1/2 max-w-2xl mx-auto justify-center overflow-hidden"
     >
-      <QueuePanel />
+      <RightPanel />
     </div>
   {/if}
 </div>

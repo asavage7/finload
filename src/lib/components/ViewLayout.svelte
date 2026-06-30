@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { queuePanelActive } from "$lib/store";
+  import { leftPanelReserve, rightPanelReserve } from "$lib/store";
   export let bgColor: string = '';
   // Contextual accent for the page being viewed: [accent, light, dark] hex.
   // Exposed to the subtree as var(--accent), var(--accent-light), var(--accent-dark).
@@ -11,9 +11,9 @@
 </script>
 
 <div
-  class="w-full h-screen flex flex-col overflow-y-auto overflow-x-auto transition-[padding-right] duration-150 ease-out"
+  class="w-full h-screen flex flex-col overflow-y-auto overflow-x-auto transition-[padding] duration-150 ease-out"
   class:bg-zinc-900={!bgColor}
-  style="{bgColor ? `background-color: ${bgColor}; ` : ''}{accentVars}padding-right: {$queuePanelActive ? '320px' : '0px'}"
+  style="{bgColor ? `background-color: ${bgColor}; ` : ''}{accentVars}padding-left: {$leftPanelReserve}px; padding-right: {$rightPanelReserve}px"
 >
 
   {#if $$slots.header}

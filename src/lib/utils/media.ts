@@ -9,7 +9,9 @@ export function getItemHref(
     id: string | number,
     albumId?: string | number
 ): string {
-    if (type === 'track') return `/album/${albumId ?? id}`;
+    // Tracks live on their album page; the `track` query tells the album page to
+    // scroll to and briefly highlight that track.
+    if (type === 'track') return `/album/${albumId ?? id}?track=${id}`;
     return `/${type}/${id}`;
 }
 

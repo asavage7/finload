@@ -99,12 +99,12 @@
         on:click={handleBackdrop}
     >
         <div
-            class="bg-zinc-800 border border-white/10 rounded-2xl shadow-2xl p-4 w-full max-w-md mx-8 flex flex-col md:flex-row items-center gap-6"
+            class="bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl p-4 w-full max-w-md mx-8 flex flex-col md:flex-row items-center gap-6"
         >
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
-                class="relative w-36 h-36 rounded-lg shadow-2xl border border-white/10 overflow-hidden bg-zinc-700 flex items-center justify-center group/cover cursor-pointer shrink-0"
+                class="relative w-36 h-36 rounded-lg shadow-2xl border border-white/10 overflow-hidden bg-zinc-800 flex items-center justify-center group/cover cursor-pointer shrink-0"
                 on:click={handleImageClick}
             >
                 {#if imagePreviewUrl}
@@ -123,7 +123,7 @@
                         {edit ? "Edit Playlist" : "New Playlist"}
                     </h2>
                     <input
-                        class="w-full bg-zinc-700 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder-zinc-500 outline-none focus:border-white/30"
+                        class="w-full bg-zinc-800 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder-zinc-500 outline-none focus:border-white/30"
                         placeholder="Playlist name…"
                         bind:value={name}
                         on:keydown={(e) => e.key === "Enter" && handleSubmit()}

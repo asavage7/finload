@@ -55,6 +55,10 @@
     IconMicrophoneFilled,
     IconPlaylistFilled,
   ];
+  const viewOptions = [
+    { view: "grid", Icon: IconLayoutGrid },
+    { view: "list", Icon: IconLayoutList },
+  ] as const;
 
   $: activeTab = $libraryActiveTab;
   // items is derived from the persistent cache so switching back to a tab is instant.
@@ -72,12 +76,16 @@
   let gridWidth = 0;
   let contentWrapper: HTMLElement | null = null;
 
-  function getCardType(tab: string): "artist" | "album" | "playlist" | "track" {
-    if (tab === "Artists") return "artist";
-    if (tab === "Playlists") return "playlist";
-    if (tab === "Tracks") return "track";
-    return "album";
-  }
+  const cardTypeByTab: Record<
+    string,
+    "artist" | "album" | "playlist" | "track"
+  > = {
+    Artists: "artist",
+    Playlists: "playlist",
+    Tracks: "track",
+    Albums: "album",
+  };
+  $: cardType = cardTypeByTab[activeTab] ?? "album";
 
   // --- Hand-rolled list windowing (single column, fixed-height rows) ---
   let listScrollTop = 0;
@@ -86,27 +94,15 @@
   let listMeasured = false;
   const LIST_OVERSCAN = 6;
 
-  $: listFirstIdx = Math.max(
-    0,
-    Math.floor(listScrollTop / listRowHeight) - LIST_OVERSCAN,
-  );
-  $: listLastIdx = Math.min(
-    totalCount - 1,
-    Math.ceil((listScrollTop + listViewportH) / listRowHeight) + LIST_OVERSCAN,
-  );
-  $: listVisible = items.slice(listFirstIdx, listLastIdx + 1);
-  $: listTotalHeight = totalCount * listRowHeight;
-
   // Chunk size scales with how many items fit on screen so we don't over/under-fetch.
   $: chunkSize = Math.max(
     100,
-    ($libraryActiveView[activeTab] === "list"
-      ? Math.ceil(listViewportH / Math.max(listRowHeight, 1))
-      : Math.ceil(gridViewportH / Math.max(gridRowHeight, 1)) *
-        Math.max(gridCols, 1)) * 2,
+    (isGrid
+      ? Math.ceil(gridViewportH / Math.max(gridRowHeight, 1)) *
+        Math.max(gridCols, 1)
+      : Math.ceil(listViewportH / Math.max(listRowHeight, 1))) * 2,
   );
   $: evictionBuffer = chunkSize * 3;
-  $: listOffsetY = listFirstIdx * listRowHeight;
 
   function measureList(node: HTMLElement) {
     if (listMeasured) return;
@@ -156,28 +152,42 @@
     });
   }
 
-  // --- Hand-rolled grid windowing ---
-  // All cards live in ONE keyed {#each} under a single CSS-grid parent, so a
-  // column change just shifts the slice + grid-template-columns and Svelte
-  // reuses/moves nodes (no remount storm from a nested per-row {#each}).
   let gridScrollTop = 0;
   let gridViewportH = 0;
   const OVERSCAN_ROWS = 2;
 
-  $: gridRowCount = Math.ceil(totalCount / gridCols);
-  $: gridTotalHeight = gridRowCount * gridRowHeight;
-  $: gridFirstRow = Math.max(
-    0,
-    Math.floor(gridScrollTop / gridRowHeight) - OVERSCAN_ROWS,
+  function computeWindow(
+    scrollTop: number,
+    viewportH: number,
+    rowHeight: number,
+    cols: number,
+    overscan: number,
+    total: number,
+  ) {
+    const rowCount = Math.ceil(total / cols);
+    const firstRow = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+    const lastRow = Math.min(
+      Math.max(rowCount - 1, 0),
+      Math.ceil((scrollTop + viewportH) / rowHeight) + overscan,
+    );
+    return {
+      startIdx: firstRow * cols,
+      endIdx: Math.min(total, (lastRow + 1) * cols),
+      offsetY: firstRow * rowHeight,
+      totalHeight: rowCount * rowHeight,
+    };
+  }
+
+  $: isGrid = $libraryActiveView[activeTab] === "grid";
+  $: win = computeWindow(
+    isGrid ? gridScrollTop : listScrollTop,
+    isGrid ? gridViewportH : listViewportH,
+    isGrid ? gridRowHeight : listRowHeight,
+    isGrid ? gridCols : 1,
+    isGrid ? OVERSCAN_ROWS : LIST_OVERSCAN,
+    totalCount,
   );
-  $: gridLastRow = Math.min(
-    Math.max(gridRowCount - 1, 0),
-    Math.ceil((gridScrollTop + gridViewportH) / gridRowHeight) + OVERSCAN_ROWS,
-  );
-  $: gridStartIdx = gridFirstRow * gridCols;
-  $: gridEndIdx = Math.min(totalCount, (gridLastRow + 1) * gridCols);
-  $: gridVisible = items.slice(gridStartIdx, gridEndIdx);
-  $: gridOffsetY = gridFirstRow * gridRowHeight;
+  $: visible = items.slice(win.startIdx, win.endIdx);
 
   // --- Scroll persistence ---
 
@@ -212,28 +222,26 @@
     if (container) container.scrollTop = saved;
   }
 
-  let gridScrollRaf = 0;
-  let listScrollRaf = 0;
-
-  function onGridScroll(e: Event) {
-    const el = e.currentTarget as HTMLElement;
-    if (gridScrollRaf) return;
-    gridScrollRaf = requestAnimationFrame(() => {
-      gridScrollRaf = 0;
-      gridScrollTop = el.scrollTop;
-      triggerWindowLoad();
+  // RAF-throttled scroll: update the active view's scrollTop, then top up the
+  // loaded window. Each handler owns its own pending-frame guard.
+  function makeScrollHandler(apply: (top: number) => void) {
+    let raf = 0;
+    const handler = (e: Event) => {
+      const el = e.currentTarget as HTMLElement;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        apply(el.scrollTop);
+        triggerWindowLoad();
+      });
+    };
+    return Object.assign(handler, {
+      cancel: () => raf && cancelAnimationFrame(raf),
     });
   }
 
-  function onListScroll(e: Event) {
-    const el = e.currentTarget as HTMLElement;
-    if (listScrollRaf) return;
-    listScrollRaf = requestAnimationFrame(() => {
-      listScrollRaf = 0;
-      listScrollTop = el.scrollTop;
-      triggerWindowLoad();
-    });
-  }
+  const onGridScroll = makeScrollHandler((t) => (gridScrollTop = t));
+  const onListScroll = makeScrollHandler((t) => (listScrollTop = t));
 
   // --- Data loading ---
 
@@ -296,11 +304,8 @@
     const count = get(libraryTotalCounts)[tab] ?? 0;
     if (count === 0) return;
     const current = get(libraryItemCache)[tab] ?? [];
-    const isGrid = get(libraryActiveView)[tab] !== "list";
-    const start = isGrid ? gridStartIdx : listFirstIdx;
-    const end = isGrid ? gridEndIdx : listLastIdx;
 
-    for (let i = start; i <= end; i++) {
+    for (let i = win.startIdx; i < win.endIdx; i++) {
       if (current[i] === undefined) {
         const alignedStart = Math.floor(i / chunkSize) * chunkSize;
         loadChunk(tab, alignedStart, alignedStart + chunkSize - 1);
@@ -385,8 +390,8 @@
 
   onDestroy(() => {
     saveScrollPosition();
-    if (gridScrollRaf) cancelAnimationFrame(gridScrollRaf);
-    if (listScrollRaf) cancelAnimationFrame(listScrollRaf);
+    onGridScroll.cancel();
+    onListScroll.cancel();
   });
 </script>
 
@@ -404,7 +409,7 @@
     <div
       class="absolute left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white/5 rounded-full"
     >
-      {#each tabs as tab}
+      {#each tabs as tab, i}
         <button
           on:click={() => handleTabClick(tab)}
           class="px-3.5 py-1.5 rounded-full text-sm font-semibold transition border {activeTab ===
@@ -413,9 +418,7 @@
             : 'text-zinc-500 hover:text-white hover:bg-white/5 border-transparent'}"
         >
           <div class="flex items-center gap-2">
-            {#if tabicons[tabs.indexOf(tab)]}
-              <svelte:component this={tabicons[tabs.indexOf(tab)]} size={16} />
-            {/if}
+            <svelte:component this={tabicons[i]} size={16} />
             {tab}
           </div>
         </button>
@@ -450,26 +453,18 @@
       </ContextMenu>
       {#if activeTab !== "Tracks"}
         <div class="flex items-center rounded-full bg-white/5 overflow-hidden">
-          <button
-            on:click={() =>
-              libraryActiveView.update((m) => ({ ...m, [activeTab]: "grid" }))}
-            class="p-2 rounded-full border transition
-            {$libraryActiveView[activeTab] === 'grid'
-              ? 'bg-white/10 text-white border-white/10'
-              : 'text-zinc-400 border-transparent hover:text-white hover:bg-white/5'}"
-          >
-            <IconLayoutGrid size={16} />
-          </button>
-          <button
-            on:click={() =>
-              libraryActiveView.update((m) => ({ ...m, [activeTab]: "list" }))}
-            class="p-2 rounded-full border transition
-            {$libraryActiveView[activeTab] === 'list'
-              ? 'bg-white/10 text-white border-white/10'
-              : 'text-zinc-400 border-transparent hover:text-white hover:bg-white/5'}"
-          >
-            <IconLayoutList size={16} />
-          </button>
+          {#each viewOptions as { view, Icon }}
+            <button
+              on:click={() =>
+                libraryActiveView.update((m) => ({ ...m, [activeTab]: view }))}
+              class="p-2 rounded-full border transition
+              {$libraryActiveView[activeTab] === view
+                ? 'bg-white/10 text-white border-white/10'
+                : 'text-zinc-400 border-transparent hover:text-white hover:bg-white/5'}"
+            >
+              <svelte:component this={Icon} size={16} />
+            </button>
+          {/each}
         </div>
       {/if}
     </div>
@@ -493,13 +488,13 @@
         class="flex-1 w-full h-full overflow-y-auto px-4 pt-4 pb-28"
       >
         <div
-          style="height: {gridTotalHeight}px; width: 100%; position: relative;"
+          style="height: {win.totalHeight}px; width: 100%; position: relative;"
         >
           <div
             use:measureGrid
-            style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({gridOffsetY}px); display: grid; gap: {GRID_GAP}px; grid-template-columns: repeat({gridCols}, minmax(0, 1fr));"
+            style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({win.offsetY}px); display: grid; gap: {GRID_GAP}px; grid-template-columns: repeat({gridCols}, minmax(0, 1fr));"
           >
-            {#each gridVisible as item, i (gridStartIdx + i)}
+            {#each visible as item, i (win.startIdx + i)}
               {#if item}
                 <MediaCard
                   id={item.id}
@@ -507,11 +502,8 @@
                   subtitle={activeTab === "Playlists"
                     ? `${item.track_count ?? 0} tracks`
                     : item.artist_name}
-                  imageUrl={getImageUrl(item.id, 220, getCardType(activeTab))}
-                  type={getCardType(activeTab) as
-                    | "artist"
-                    | "album"
-                    | "playlist"}
+                  imageUrl={getImageUrl(item.id, 220, cardType)}
+                  type={cardType as "artist" | "album" | "playlist"}
                   coverAlbumIds={activeTab === "Playlists"
                     ? (item.first_album_ids ?? [])
                     : []}
@@ -529,7 +521,7 @@
     {:else}
       {#if activeTab === "Tracks"}
         <div
-          class="flex items-center gap-2 py-2 px-4 justify-between border-b border-white/10"
+          class="flex items-center gap-2 py-2 pl-4 pr-2 justify-between border-b border-white/10"
         >
           <span class="text-sm text-zinc-400">{totalCount} tracks</span>
           <div class="flex items-center gap-2">
@@ -559,21 +551,21 @@
           class="flex-1 w-full h-full overflow-y-auto px-4 pt-4 pb-28"
         >
           <div
-            style="height: {listTotalHeight}px; width: 100%; position: relative;"
+            style="height: {win.totalHeight}px; width: 100%; position: relative;"
           >
             <div
               use:measureList
-              style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({listOffsetY}px);"
+              style="position: absolute; top: 0; left: 0; width: 100%; transform: translateY({win.offsetY}px);"
             >
-              {#each listVisible as item, i (listFirstIdx + i)}
+              {#each visible as item, i (win.startIdx + i)}
                 {#if item}
                   <MediaRow
                     id={item.id}
                     album_id={item.album_id || ""}
                     title={item.name || item.title}
                     subtitle={item.artist_name}
-                    imageUrl={getImageUrl(item.id, 220, getCardType(activeTab))}
-                    type={getCardType(activeTab)}
+                    imageUrl={getImageUrl(item.id, 220, cardType)}
+                    type={cardType}
                     duration={formatTime(item.duration_ms, true)}
                     rating={item.rating ?? 0}
                   />

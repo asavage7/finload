@@ -1,7 +1,9 @@
 <script lang="ts">
   import "../app.css";
   import FooterPlayer from "$lib/components/player/FooterPlayer.svelte";
-  import QueuePanel from "$lib/components/player/QueuePanel.svelte";
+  import RightPanel from "$lib/components/panels/RightPanel.svelte";
+  import LeftPanel from "$lib/components/panels/LeftPanel.svelte";
+  import SidePanel from "$lib/components/panels/SidePanel.svelte";
   import PlaylistPicker from "$lib/components/PlaylistPicker.svelte";
   import ConfirmModal from "$lib/components/modals/ConfirmModal.svelte";
   import PlaylistCreationModal from "$lib/components/modals/PlaylistCreationModal.svelte";
@@ -9,10 +11,16 @@
     playlistEditStore,
     playerState,
     queuePanelActive,
+    leftPanelCondensed,
+    leftPanelWidth,
+    QUEUE_PANEL_WIDTH,
+    windowWidth,
+    leftPanelReserve,
+    rightPanelReserve,
+    panelsOverlay,
     DEFAULT_ACCENT_COLORS,
   } from "$lib/store";
-  import { slide, fade } from "svelte/transition";
-  import { cubicOut } from "svelte/easing";
+  import { fade } from "svelte/transition";
   import { onDestroy, onMount } from "svelte";
   import { apiUrl, wsUrl } from "$lib/backend";
   import { updatePlayerState } from "$lib/utils/store";
@@ -71,11 +79,16 @@
       }
     };
 
+    const handleResize = () => windowWidth.set(window.innerWidth);
+    handleResize();
+
     window.addEventListener("player-command", handlePlayerCommand);
+    window.addEventListener("resize", handleResize);
     connectSocket();
 
     return () => {
       window.removeEventListener("player-command", handlePlayerCommand);
+      window.removeEventListener("resize", handleResize);
     };
   });
 
@@ -139,6 +152,21 @@
       updatePlayerState({ accent_colors: DEFAULT_ACCENT_COLORS });
     }
   }
+
+  // Now-playing is a full-screen view, so both edge panels step aside there
+  // (the queue is shown inline within that page instead).
+  $: isFullScreen = $page.url.pathname === "/now-playing";
+  $: showQueue = $queuePanelActive && !isFullScreen;
+  $: showLeft = !isFullScreen;
+
+  // The left rail only floats once it's expanded; condensed it always sits beside
+  // the content. The queue panel floats whenever it's open below the breakpoint.
+  $: leftOverlay = $panelsOverlay && !$leftPanelCondensed;
+  $: rightOverlay = $panelsOverlay && showQueue;
+
+  // The footer tracks reserved space only, so it stays put when a panel overlays.
+  $: footerLeft = showLeft ? `${$leftPanelReserve}px` : "0px";
+  $: footerRight = `${$rightPanelReserve}px`;
 </script>
 
 <PlaylistPicker />
@@ -152,29 +180,40 @@
 />
 
 <div class="flex h-screen w-full bg-zinc-900 text-white overflow-hidden">
-  <div class="flex-1 flex relative overflow-y-auto">
+  <div class="flex-1 flex relative overflow-hidden">
     {#key $page.url.pathname}
       <main class="flex-1 overflow-auto" in:fade={{ duration: 100 }}>
         <slot />
       </main>
     {/key}
 
-    {#if $queuePanelActive && $page.url.pathname !== '/now-playing'}
-      <div
-        transition:slide={{ axis: "x", duration: 150, easing: cubicOut }}
-        class="overflow-hidden z-10 p-2 absolute top-0 right-0 h-full w-80"
+    {#if showLeft}
+      <SidePanel
+        side="left"
+        widthPx={$leftPanelWidth}
+        duration={150}
+        overlay={leftOverlay}
+        onClose={() => leftPanelCondensed.set(true)}
       >
-        <div
-          class="flex rounded-xl bg-white/5 border border-white/5 transition-all duration-500 h-full"
-        >
-          <QueuePanel />
-        </div>
-      </div>
+        <LeftPanel />
+      </SidePanel>
+    {/if}
+
+    {#if showQueue}
+      <SidePanel
+        side="right"
+        widthPx={QUEUE_PANEL_WIDTH}
+        duration={150}
+        overlay={rightOverlay}
+        onClose={() => queuePanelActive.set(false)}
+      >
+        <RightPanel />
+      </SidePanel>
     {/if}
 
     <div
-      class="absolute bottom-4 left-4 z-1000 transition-[right] duration-150 ease-out"
-      style="right: calc(1rem + {$queuePanelActive && $page.url.pathname !== '/now-playing' ? '320px' : '0px'})"
+      class="absolute bottom-4 z-1000 transition-[left,right] duration-150 ease-out"
+      style="left: calc(1rem + {footerLeft}); right: calc(1rem + {footerRight})"
     >
       <FooterPlayer />
     </div>

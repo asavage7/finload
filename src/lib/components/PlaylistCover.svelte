@@ -43,7 +43,7 @@
 </script>
 
 <div
-    class="w-full h-full overflow-hidden flex items-center justify-center bg-zinc-700"
+    class="w-full h-full overflow-hidden flex items-center justify-center bg-zinc-800"
 >
     {#if !mainFailed}
         <img

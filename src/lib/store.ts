@@ -1,4 +1,4 @@
-import { writable } from "svelte/store";
+import { writable, derived } from "svelte/store";
 
 export type TrackInfo = {
     id: string | number | null;
@@ -60,6 +60,50 @@ export const playerState = writable<PlayerState>({
 });
 
 export const queuePanelActive = writable(false);
+
+// Reserved width (px) of the right queue panel. Mirrors its `w-80` class and is
+// what the page reserves as padding-right while it's open.
+export const QUEUE_PANEL_WIDTH = 320;
+
+// Left navigation panel. It can be condensed to an icon-only rail but never
+// closed, so we track a condensed flag rather than an open/closed one.
+export const leftPanelCondensed = writable(true);
+export const LEFT_PANEL_WIDTH_EXPANDED = 256;
+export const LEFT_PANEL_WIDTH_CONDENSED = 68;
+export const leftPanelWidth = derived(leftPanelCondensed, ($condensed) =>
+    $condensed ? LEFT_PANEL_WIDTH_CONDENSED : LEFT_PANEL_WIDTH_EXPANDED,
+);
+
+// Live viewport width. Drives responsive panel behaviour and lets the grid lock
+// its column count to the window instead of the (panel-dependent) content width.
+export const windowWidth = writable<number>(
+    typeof window !== "undefined" ? window.innerWidth : 1280,
+);
+
+// Below PUSH_BREAKPOINT the panels float over the content (modal-like) instead
+// of pushing it aside.
+export const PUSH_BREAKPOINT = 1000;
+
+export const panelsOverlay = derived(windowWidth, ($w) => $w < PUSH_BREAKPOINT);
+
+// Layout space each panel reserves (content padding + footer offset). A panel
+// only reserves space while it pushes content; when overlaying it reserves
+// nothing. The condensed left rail always reserves its width so it stays beside
+// the content even below the overlay breakpoint.
+export const leftPanelReserve = derived(
+    [windowWidth, leftPanelCondensed],
+    ([$w, $condensed]) =>
+        $w >= PUSH_BREAKPOINT
+            ? $condensed
+                ? LEFT_PANEL_WIDTH_CONDENSED
+                : LEFT_PANEL_WIDTH_EXPANDED
+            : LEFT_PANEL_WIDTH_CONDENSED,
+);
+export const rightPanelReserve = derived(
+    [windowWidth, queuePanelActive],
+    ([$w, $active]) =>
+        $w >= PUSH_BREAKPOINT && $active ? QUEUE_PANEL_WIDTH : 0,
+);
 
 export const libraryActiveTab = writable<'Tracks' | 'Albums' | 'Artists' | 'Playlists'>('Albums');
 

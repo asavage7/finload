@@ -98,7 +98,7 @@
             <ContextMenu items={buildItemMenuItems(id, type)} let:toggle>
               <IconButton
                 on:click={(e) => toggle(e)}
-                class="text-white hover:backdrop-blur-xl hover:shadow-md"
+                class="text-white hover:backdrop-blur-xl hover:shadow-md border border-transparent hover:border-white/10"
               >
                 <IconMenu2Filled size={16} />
               </IconButton>

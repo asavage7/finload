@@ -82,7 +82,7 @@
 {#if isLoading}
     <Loading />
 {:else if artistData}
-    {@const blendedBg = blendHex(artistData.accent_colors[2], "#18181b", 0.1)}
+    {@const blendedBg = blendHex(artistData.accent_colors[2], "#161616", 0.2)}
     <ViewLayout bgColor={blendedBg} accent={artistData.accent_colors}>
         <header
             slot="header"
