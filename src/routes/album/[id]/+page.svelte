@@ -4,116 +4,100 @@
     import ViewLayout from "$lib/components/ViewLayout.svelte";
     import Rating from "$lib/components/Rating.svelte";
     import Loading from "$lib/components/Loading.svelte";
+    import ContextMenu from "$lib/components/ContextMenu.svelte";
+    import IconButton from "$lib/components/ui/IconButton.svelte";
+    import BackButton from "$lib/components/ui/BackButton.svelte";
     import {
         IconPlayerPlayFilled,
         IconArrowsShuffle,
         IconMenu2Filled,
-        IconArrowBack,
+        IconDisc,
     } from "@tabler/icons-svelte";
     import { formatTime } from "$lib/utils/formatTime";
     import { apiUrl } from "$lib/backend";
+    import { getImageUrl, fetchAccentColors } from "$lib/utils/media";
+    import { blendHex } from "$lib/utils/color";
+    import {
+        playAlbum,
+        playAlbumAtTrack,
+        buildTrackMenuItems,
+        buildCollectionMenuItems,
+    } from "$lib/utils/playback";
 
-    // 1. Grab the dynamic [id] out of the current URL path
-    const albumId = page.params.id;
+    const albumId = page.params.id!;
 
-    // 2. Define state variables for data holding
     let albumData: any = null;
-    let duration_ms = 0;
     let tracks: any[] = [];
     let discs: any[] = [];
     let isLoading = true;
+    let bgLoaded = false;
 
     onMount(async () => {
+        const colorsPromise = fetchAccentColors("album", albumId);
         try {
-            // 3. Fetch album context + track list from our Python backend
             const res = await fetch(apiUrl(`/api/album/${albumId}`));
             const data = await res.json();
 
             albumData = data.album;
+            albumData.accent_colors = ["#888888", "#888888", "#1c1c1f"];
             tracks = [].concat(...data.discs.map((disc: any) => disc.tracks));
             discs = data.discs;
+            isLoading = false;
 
-            // Fetch accent colors for dynamic theming (optional)
-            const colorRes = await fetch(
-                apiUrl(`/api/album/${albumId}/accent-colors`),
-            );
-            const colors = await colorRes.json();
-            albumData.accent_colors = colors;
-            albumData = albumData;
+            const colors = await colorsPromise;
+            if (colors.length > 0) {
+                albumData.accent_colors = colors;
+                albumData = albumData;
+            }
         } catch (error) {
             console.error("Failed to load album details:", error);
-        } finally {
             isLoading = false;
         }
     });
 
-    // 4. Playback handlers to communicate with Python MPV
-    async function playAlbum() {
-        // Challenge logic: Tell backend to clear current queue and play this whole album list
-        await fetch(apiUrl(`/api/playback/play_album/${albumId}`), {
-            method: "POST",
-        });
-    }
-
-    async function playTrack(trackId: string) {
-        await fetch(
-            apiUrl(`/api/playback/play_album/${albumId}?track_id=${trackId}`),
-            { method: "POST" },
-        );
-    }
-
-async function addTrackToQueue(trackInput: string | string[]) {
-    await fetch(`/api/playback/add_to_queue/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-            track_id: trackInput 
-            // index is omitted, so FastAPI uses the default -1
-        }), 
-    });
-}
-
     $: showDiscLabels =
         discs.length > 1 || (discs.length === 1 && discs[0]?.disc_number !== 1);
+
+    $: allTrackIds = tracks.map((t: any) => t.id);
 </script>
 
 {#if isLoading}
     <Loading />
 {:else if albumData}
-    <ViewLayout>
+    {@const blendedBg = blendHex(albumData.accent_colors[2], "#1c1c1f", 0.1)}
+    <ViewLayout bgColor={blendedBg} accent={albumData.accent_colors}>
         <header
             slot="header"
-            class="relative w-full flex items-end md:px-8 pt-8 pb-2 md:pb-0 bg-gradient-to-b from-zinc-800/40 to-zinc-950 pt-18"
+            class="relative w-full flex items-end md:px-8 pt-8 pb-4 pt-18"
         >
             <img
-                src={apiUrl(`/api/image/${albumData.id}?size=800`)}
+                src={getImageUrl(albumData.id, 220)}
                 alt=""
-                class="absolute inset-0 w-full h-full object-cover blur-3xl opacity-20 scale-110 pointer-events-none"
+                class="absolute inset-0 w-full h-full blur-[1080px] object-cover pointer-events-none transition-opacity duration-700"
+                style="opacity: {bgLoaded ? '0.25' : '0'}"
+                on:load={() => { bgLoaded = true; }}
             />
 
-            <button
-                on:click={() => history.back()}
-                class="absolute top-4 left-4 p-2 rounded-full bg-transparent text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer transition"
-            >
-                <div class="flex items-center gap-2 px-2">
-                    <IconArrowBack size={16} />
-                    Back
-                </div>
-            </button>
+            <BackButton class="absolute top-4 left-4" />
 
             <div
                 class="relative z-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-full max-w-6xl mx-auto pb-8 md:px-6 border-b border-white/10"
             >
-                <img
-                    src={apiUrl(`/api/image/${albumData.id}?size=400`)}
-                    alt={albumData.title}
-                    class="w-55 h-55 object-cover rounded-xl shadow-2xl border border-white/10 bg-zinc-900"
-                />
+                <div class="w-full px-8 md:w-auto md:p-0">
+                    <img
+                        src={getImageUrl(albumData.id, 220)}
+                        alt={albumData.title}
+                        class="w-full max-w-[40vh] md:w-55 md:h-55 mx-auto object-cover rounded-xl shadow-2xl border border-white/10 bg-zinc-800"
+                    />
+                </div>
 
-                <div class="flex-1 text-center md:text-left space-y-2">
+
+                <div
+                    class="flex-1 text-center md:text-left space-y-2 px-4 md:px-0"
+                >
                     <span
                         class="text-xs uppercase font-black tracking-widest"
-                        style="color: {albumData.accent_colors[1]}">ALBUM</span
+                        style="color: var(--accent-light)">ALBUM</span
                     >
                     <h1
                         class="text-2xl md:text-5xl font-black text-white line-clamp-2 mb-0 pb-1"
@@ -126,11 +110,15 @@ async function addTrackToQueue(trackInput: string | string[]) {
                     >
                         {albumData.artist_name}
                     </a>
-                    <Rating
-                        rating={3}
-                        rated_color={albumData.accent_colors[1]}
-                        size={16}
-                    ></Rating>
+                    <div class="flex justify-center md:justify-start">
+                        <Rating
+                            id={albumData.id}
+                            itemType="album"
+                            rating={albumData.rating}
+                            rated_color="var(--accent-light)"
+                            size={16}
+                        />
+                    </div>
                     <div
                         class="flex flex-wrap items-center justify-center md:justify-start gap-2 text-sm text-zinc-400 font-medium"
                     >
@@ -151,63 +139,72 @@ async function addTrackToQueue(trackInput: string | string[]) {
                     </div>
                 </div>
 
-                <div class="md:absolute right-0 flex items-center gap-4">
+                <div
+                    class="md:absolute right-0 flex justify-center items-center gap-4"
+                >
                     <button
-                        on:click={playAlbum}
-                        class="px-6 py-2 rounded-full text-white font-bold transition border border-white/10"
-                        style="background-color: {albumData.accent_colors[0]}"
+                        on:click={() => playAlbum(albumId, false)}
+                        class="order-2 md:order-1 px-8 md:px-6 py-2 rounded-full text-white font-bold transition border border-white/10"
+                        style="background-color: var(--accent)"
                     >
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center gap-4">
                             <IconPlayerPlayFilled size={16} />
                             Play
                         </div>
                     </button>
-                    <button
-                        class="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 transition"
+                    <IconButton
+                        on:click={() => playAlbum(albumId, true)}
+                        class="order-1 md:order-2"
                     >
                         <IconArrowsShuffle size={16} />
-                    </button>
-                    <button
-                        class="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 transition"
+                    </IconButton>
+                    <ContextMenu
+                        items={buildCollectionMenuItems(allTrackIds)}
+                        let:toggle
                     >
-                        <IconMenu2Filled size={16} />
-                    </button>
+                        <IconButton on:click={toggle} class="order-3">
+                            <IconMenu2Filled size={16} />
+                        </IconButton>
+                    </ContextMenu>
                 </div>
             </div>
         </header>
 
         <div
             slot="content"
-            class="text-zinc-400 w-full max-w-6xl py-4 px-0 md:px-4 mx-auto pb-28"
+            class="text-zinc-400 w-full max-w-6xl px-0 md:px-4 mx-auto pb-20"
         >
+            <!-- {#if albumData.description}
+                <p class="text-sm text-zinc-500 leading-relaxed mx-4 mt-3 mb-4">
+                    {albumData.description}
+                </p>
+            {/if} -->
+
             {#each discs as disc}
                 {#if showDiscLabels}
+                    {@const discTrackIds = disc.tracks.map((t: any) => t.id)}
                     <div
-                        class="flex justify-between items-center text-zinc-400 font-bold py-2 px-4 md:px-4 md:pt-4 md:pb-0 sticky top-0 z-10"
+                        class="flex items-center text-white/75 font-bold py-2 px-4 md:px-0"
                     >
+                        <IconDisc size={16} class="mr-2" />
                         <div>Disc {disc.disc_number}</div>
-                        <div class="flex items-center gap-2">
+                        <!-- <div class="flex items-center gap-2">
                             <button
-                                on:click={() => history.back()}
                                 class="p-2 rounded-full text-white border border-white/10 cursor-pointer transition"
-                                style="background-color: {albumData
-                                    .accent_colors[0]}"
+                                style="background-color: var(--accent)"
                             >
                                 <IconPlayerPlayFilled size={16} />
                             </button>
-                            <button
-                                on:click={() => history.back()}
-                                class="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer transition"
+                            <IconButton><IconArrowsShuffle size={16} /></IconButton>
+                            <ContextMenu
+                                items={buildCollectionMenuItems(discTrackIds)}
+                                let:toggle
                             >
-                                <IconArrowsShuffle size={16} />
-                            </button>
-                            <button
-                                on:click={() => history.back()}
-                                class="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer transition"
-                            >
-                                <IconMenu2Filled size={16} />
-                            </button>
-                        </div>
+                                <IconButton on:click={toggle}>
+                                    <IconMenu2Filled size={16} />
+                                </IconButton>
+                            </ContextMenu>
+                        </div> -->
                     </div>
                 {/if}
 
@@ -216,51 +213,64 @@ async function addTrackToQueue(trackInput: string | string[]) {
                         <!-- svelte-ignore a11y_no_static_element_interactions -->
                         <!-- svelte-ignore a11y_click_events_have_key_events -->
                         <div
-                            on:click={() => playTrack(track.id)}
-                            class="flex items-center pl-4 p-2.5 hover:bg-white/5 border md:hover:border-white/10 border-transparent group transition duration-200 gap-4 cursor-pointer md:rounded-full"
+                            on:click={() => playAlbumAtTrack(albumId, track.id)}
+                            class="flex items-center px-4 p-2 md:pr-2 hover:bg-white/5 group transition duration-200 gap-4 cursor-pointer md:rounded-full min-w-0"
                         >
                             <div
-                                class="w-6 h-6 flex items-center justify-center relative"
+                                class="w-6 h-6 flex-shrink-0 flex items-center justify-center relative"
                             >
                                 <div
                                     class="absolute -inset-0 flex items-center justify-center opacity-100 group-hover:opacity-0 transition-opacity duration-200 text-xs"
-                                    style="color: {albumData.accent_colors[1]}"
+                                    style="color: var(--accent-light)"
                                 >
                                     {track.track_number || index + 1}
                                 </div>
                                 <IconPlayerPlayFilled
                                     size={20}
                                     class="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-                                    style="color: {albumData.accent_colors[1]}"
+                                    style="color: var(--accent-light)"
                                 />
                             </div>
 
                             <div
-                                class="flex flex-1 flex-col min-w-0 h-[36px] items-left justify-center"
+                                class="flex grow min-w-0 flex-col overflow-hidden h-[36px] justify-center"
                             >
-                                <p class="text-white text-sm truncate">
+                                <p class="text-white text-sm truncate min-w-0">
                                     {track.title}
                                 </p>
                                 {#if track.artist_name !== albumData.artist_name}
-                                    <p class="text-zinc-400 text-xs truncate">
+                                    <p
+                                        class="text-zinc-400 text-xs truncate min-w-0"
+                                    >
                                         {track.artist_name}
                                     </p>
                                 {/if}
                             </div>
 
-                            <div class="flex gap-4 justify-end items-center">
-                                <div
-                                    class="time-text text-xs right text-zinc-400 text-sm"
-                                >
+                            <div
+                                class="flex-shrink-0 flex gap-4 justify-end items-center"
+                            >
+                                <Rating
+                                    id={track.id}
+                                    itemType="track"
+                                    rating={track.rating}
+                                    size={12}
+                                    rated_color="var(--accent-light)"
+                                />
+                                <div class=" ml-4 text-xs text-zinc-400">
                                     {formatTime(track.duration_ms, true)}
                                 </div>
-                                <button
-                                    on:click|preventDefault|stopPropagation={() =>
-                                        addTrackToQueue(track.id)}
-                                    class="p-2 rounded-full hover:bg-white/10 border hover:border-white/10 border-transparent transition text-white"
+                                <ContextMenu
+                                    items={buildTrackMenuItems(track.id)}
+                                    let:toggle
                                 >
-                                    <IconMenu2Filled size={16} />
-                                </button>
+                                    <IconButton
+                                        on:click={(e) => toggle(e)}
+                                        class="text-white"
+                                    >
+                                        <IconMenu2Filled size={16} />
+                                    </IconButton>
+                                </ContextMenu>
                             </div>
                         </div>
                     {/each}
@@ -269,6 +279,5 @@ async function addTrackToQueue(trackInput: string | string[]) {
         </div>
     </ViewLayout>
 {:else}
-    <div class="p-8 text-red-400">Album context not found.</div>
+    <div class="p-8 text-red-400">Album not found.</div>
 {/if}
-r truncate w-full text-left

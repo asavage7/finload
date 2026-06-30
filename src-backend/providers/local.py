@@ -1,0 +1,404 @@
+"""Local-files media provider.
+
+Scans a folder of audio files and exposes them through the same
+``MediaProvider`` interface the rest of the app uses, so local libraries behave
+exactly like a Jellyfin server: the API, sync and playback layers never learn
+that the source is the local disk.
+
+Identity & persistence
+-----------------------
+Track / album / artist IDs are derived deterministically from tags (and, for
+tracks, the absolute file path) so they stay stable across rescans. The
+``file_path`` column on the ``Track`` DB row maps each track ID back to a file
+on disk, so playback and artwork work after app restarts without a re-scan.
+"""
+import base64
+import hashlib
+import io
+import json
+import os
+import re
+import urllib.parse
+import urllib.request
+from typing import Iterator, List, Optional, Set
+
+import mutagen
+from mutagen.flac import Picture
+from PIL import Image
+
+from database import Track
+from .base import MediaProvider
+
+# File extensions we treat as playable audio.
+AUDIO_EXTENSIONS = {
+    ".mp3", ".flac", ".m4a", ".aac", ".alac", ".ogg", ".oga", ".opus",
+    ".wav", ".aiff", ".aif", ".wma", ".ape", ".mpc", ".wv",
+}
+
+# Cover-art filenames looked for in a track's directory (case-insensitive),
+# in priority order, when a file has no embedded artwork.
+COVER_BASENAMES = ("cover", "folder", "front", "album", "albumart", "thumb")
+COVER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+REQUEST_TIMEOUT = 5
+
+
+def _stable_hash(*parts: str) -> str:
+    """A short, stable hex digest of the given strings."""
+    joined = "\x00".join(parts)
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()[:20]
+
+
+def _first(value, default: str = "") -> str:
+    """Mutagen easy-tags return lists; take the first non-empty value."""
+    if isinstance(value, (list, tuple)):
+        return str(value[0]).strip() if value else default
+    if value is None:
+        return default
+    return str(value).strip() or default
+
+
+def _parse_int(value: str) -> int:
+    """Parse leading digits from tag values like '3', '03/12' or 'Disc 1'."""
+    match = re.search(r"\d+", value or "")
+    return int(match.group()) if match else 0
+
+
+def _parse_year(value: str) -> int:
+    match = re.search(r"\d{4}", value or "")
+    return int(match.group()) if match else 0
+
+
+class LocalProvider(MediaProvider):
+    SETTINGS_KEYS = ("local_music_path",)
+
+    def __init__(self, settings) -> None:
+        super().__init__()
+        # track_id -> normalized item dict, populated during a full scan so
+        # ``fetch_items_by_ids`` doesn't have to re-read files it just parsed.
+        self._scan_cache: dict = {}
+        self.configure(settings)
+
+    # -- configuration ------------------------------------------------------
+    def configure(self, settings) -> None:
+        path = (settings.get("local_music_path") or "").strip()
+        self.music_path = os.path.abspath(os.path.expanduser(path)) if path else ""
+
+    def is_configured(self) -> bool:
+        return bool(self.music_path and os.path.isdir(self.music_path))
+
+    # -- file walking & tag parsing ----------------------------------------
+    def _iter_audio_files(self) -> Iterator[str]:
+        for root, _dirs, files in os.walk(self.music_path):
+            for name in files:
+                if os.path.splitext(name)[1].lower() in AUDIO_EXTENSIONS:
+                    yield os.path.join(root, name)
+
+    def _parse_file(self, path: str) -> Optional[dict]:
+        """Read tags from one file and build a normalized item dict.
+
+        Returns ``None`` if the file can't be read as audio.
+        """
+        try:
+            easy = mutagen.File(path, easy=True)
+        except Exception:
+            easy = None
+        if easy is None:
+            return None
+
+        tags = easy.tags or {}
+        info = getattr(easy, "info", None)
+        directory = os.path.dirname(path)
+        filename = os.path.splitext(os.path.basename(path))[0]
+
+        title = _first(tags.get("title"), filename)
+        track_artist_name = _first(tags.get("artist"), "Unknown Artist")
+        album_artist_name = _first(tags.get("albumartist"), track_artist_name)
+        album_title = _first(tags.get("album"), "Unknown Album")
+        genres = tags.get("genre")
+        if isinstance(genres, (list, tuple)) and genres:
+            genre = ", ".join(str(g).strip() for g in genres if str(g).strip()) or "Unknown"
+        else:
+            genre = _first(genres, "Unknown")
+
+        track_number = _parse_int(_first(tags.get("tracknumber")))
+        disc_number = _parse_int(_first(tags.get("discnumber"))) or 1
+        release_year = _parse_year(_first(tags.get("date")) or _first(tags.get("year")))
+        duration_ms = int(getattr(info, "length", 0) * 1000) if info else 0
+
+        track_id = _stable_hash(path)
+        album_id = _stable_hash(album_artist_name.lower(), album_title.lower())
+        album_artist_id = _stable_hash(album_artist_name.lower())
+        track_artist_id = _stable_hash(track_artist_name.lower())
+
+        has_artwork = self._has_artwork(path, directory)
+
+        return {
+            "artists": [
+                {"id": album_artist_id, "name": album_artist_name, "provider": "local"},
+                {"id": track_artist_id, "name": track_artist_name, "provider": "local"},
+            ],
+            "album_data": {
+                "id": album_id,
+                "title": album_title,
+                "artist": album_artist_id,
+                "release_year": release_year,
+                "genre": genre,
+                "provider": "local",
+            },
+            "track_data": {
+                "id": track_id,
+                "title": title,
+                "artist": track_artist_id,
+                "album": album_id,
+                "track_number": track_number,
+                "disc_number": disc_number,
+                "duration_ms": duration_ms,
+                "has_artwork": has_artwork,
+                "file_path": path,
+                "provider": "local",
+            },
+        }
+
+    # -- sync ---------------------------------------------------------------
+    def fetch_all_ids(self) -> Set[str]:
+        """Full scan of the library folder."""
+        self._scan_cache = {}
+
+        for path in self._iter_audio_files():
+            item = self._parse_file(path)
+            if item:
+                self._scan_cache[item["track_data"]["id"]] = item
+
+        return set(self._scan_cache.keys())
+
+    def fetch_items_by_ids(self, item_ids: List[str]) -> Iterator[dict]:
+        for track_id in item_ids:
+            item = self._scan_cache.get(track_id)
+            if item is None:
+                # Not in the most recent scan (shouldn't normally happen, since
+                # Not in scan cache; re-parse from the DB-stored path.
+                path = self._resolve_track_path(track_id)
+                if path and os.path.exists(path):
+                    item = self._parse_file(path)
+            if item:
+                yield item
+
+    # -- playback -----------------------------------------------------------
+    def _resolve_track_path(self, track_id: str) -> Optional[str]:
+        track = Track.get_or_none(Track.id == track_id)
+        return track.file_path if track and track.file_path else None
+
+    def get_stream_url(self, track_id: str) -> str:
+        """Local files play straight off disk — mpv accepts the path as-is."""
+        path = self._resolve_track_path(track_id)
+        if not path:
+            raise FileNotFoundError(f"No local file for track {track_id}")
+        return path
+
+    # -- artwork ------------------------------------------------------------
+    def _find_cover_file(self, directory: str) -> Optional[str]:
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            return None
+        lookup = {name.lower(): name for name in entries}
+        for base in COVER_BASENAMES:
+            for ext in COVER_EXTENSIONS:
+                actual = lookup.get(base + ext)
+                if actual:
+                    return os.path.join(directory, actual)
+        return None
+
+    def _has_artwork(self, path: str, directory: str) -> bool:
+        if self._find_cover_file(directory):
+            return True
+        # No folder cover — check for an embedded picture. This needs a full
+        # (non-easy) parse, since EasyID3 doesn't expose APIC frames.
+        try:
+            audio = mutagen.File(path)
+        except Exception:
+            return False
+        return self._extract_embedded_art(audio) is not None
+
+    def _extract_embedded_art(self, audio) -> Optional[bytes]:
+        """Pull embedded cover bytes from a parsed mutagen file, across formats."""
+        if audio is None:
+            return None
+        # FLAC / WavPack expose .pictures directly.
+        pictures = getattr(audio, "pictures", None)
+        if pictures:
+            return pictures[0].data
+
+        tags = getattr(audio, "tags", None)
+        if not tags:
+            return None
+
+        # ID3 (MP3): APIC frames.
+        if hasattr(tags, "getall"):
+            try:
+                apics = tags.getall("APIC")
+                if apics:
+                    return apics[0].data
+            except Exception:
+                pass
+
+        # MP4 / M4A: 'covr' atom.
+        try:
+            if "covr" in tags:
+                covers = tags["covr"]
+                if covers:
+                    return bytes(covers[0])
+        except Exception:
+            pass
+
+        # Vorbis comments (OGG/Opus): base64 FLAC Picture block.
+        try:
+            block = tags.get("metadata_block_picture")
+            if block:
+                raw = block[0] if isinstance(block, (list, tuple)) else block
+                return Picture(base64.b64decode(raw)).data
+        except Exception:
+            pass
+
+        return None
+
+    def _load_art_bytes(self, item_id: str) -> Optional[bytes]:
+        """Find cover-art bytes for a track or album ID."""
+        track = Track.get_or_none(Track.id == item_id)
+        if track and track.file_path:
+            path = track.file_path
+        else:
+            # item_id is an album ID — pick any track from that album.
+            track = Track.get_or_none(Track.album == item_id)
+            path = track.file_path if track and track.file_path else None
+        if not path or not os.path.exists(path):
+            return None
+
+        # Prefer an embedded picture; fall back to a cover file in the folder.
+        try:
+            audio = mutagen.File(path)
+        except Exception:
+            audio = None
+        data = self._extract_embedded_art(audio)
+        if data:
+            return data
+
+        cover = self._find_cover_file(os.path.dirname(path))
+        if cover:
+            try:
+                with open(cover, "rb") as fh:
+                    return fh.read()
+            except OSError:
+                return None
+        return None
+
+    def download_image_to_cache(self, item_id: str, size_px: int = 0) -> bool:
+        data = self._load_art_bytes(item_id)
+        if not data:
+            return False
+
+        cache_path = self.get_cached_image_path(item_id, size_px)
+        try:
+            with Image.open(io.BytesIO(data)) as img:
+                img = img.convert("RGB")
+                if size_px > 0 and img.width > size_px:
+                    height = round(img.height * (size_px / img.width))
+                    img = img.resize((size_px, max(1, height)), Image.LANCZOS)
+                img.save(cache_path, "JPEG", quality=88)
+            return True
+        except Exception as exc:
+            print(f"Failed to write local artwork for {item_id}: {exc}")
+            return False
+
+    # -- lyrics -------------------------------------------------------------
+    def get_lyrics(self, track_id: str, lrclib_enabled: bool = True,
+                   synced_enabled: bool = True) -> dict:
+        path = self._resolve_track_path(track_id)
+
+        # 1. Sidecar .lrc file next to the track (synced if it has timestamps).
+        if path:
+            lrc_path = os.path.splitext(path)[0] + ".lrc"
+            if os.path.exists(lrc_path):
+                try:
+                    with open(lrc_path, "r", encoding="utf-8", errors="ignore") as fh:
+                        result = self._parse_lrc(fh.read(), synced_enabled)
+                    if result["type"] != "none":
+                        return result
+                except OSError:
+                    pass
+
+        # 2. Embedded lyrics tag (unsynced).
+        embedded = self._embedded_lyrics(path) if path else None
+
+        # 3. lrclib.net lookup, mirroring the Jellyfin provider.
+        if lrclib_enabled:
+            result = self._fetch_lrclib(track_id, synced_enabled)
+            if result["type"] != "none":
+                return result
+
+        if embedded:
+            return {"type": "unsynced", "text": embedded}
+        return {"type": "none"}
+
+    def _parse_lrc(self, text: str, synced_enabled: bool) -> dict:
+        lines = []
+        plain = []
+        for raw in text.splitlines():
+            matches = re.findall(r"\[(\d+):(\d+(?:\.\d+)?)\]", raw)
+            content = re.sub(r"\[[^\]]*\]", "", raw).strip()
+            if matches and content:
+                for mins, secs in matches:
+                    lines.append({"time_ms": int(mins) * 60000 + float(secs) * 1000, "text": content})
+            if content:
+                plain.append(content)
+        if lines and synced_enabled:
+            lines.sort(key=lambda entry: entry["time_ms"])
+            return {"type": "synced", "lines": lines}
+        if plain:
+            return {"type": "unsynced", "text": "\n".join(plain)}
+        return {"type": "none"}
+
+    def _embedded_lyrics(self, path: str) -> Optional[str]:
+        try:
+            easy = mutagen.File(path, easy=True)
+            if easy and easy.tags and "lyrics" in easy.tags:
+                return _first(easy.tags.get("lyrics")) or None
+        except Exception:
+            pass
+        try:
+            audio = mutagen.File(path)
+            tags = getattr(audio, "tags", None)
+            if tags and hasattr(tags, "getall"):
+                uslt = tags.getall("USLT")
+                if uslt:
+                    return str(uslt[0].text)
+        except Exception:
+            pass
+        return None
+
+    def _fetch_lrclib(self, track_id: str, synced_enabled: bool) -> dict:
+        try:
+            track = Track.get_by_id(track_id)
+            query = urllib.parse.urlencode({
+                "track_name": track.title,
+                "artist_name": track.artist.name,
+                "album_name": track.album.title,
+                "duration": int(track.duration_ms) / 1000,
+            })
+            req = urllib.request.Request(
+                f"https://lrclib.net/api/get?{query}",
+                headers={"User-Agent": "finload/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
+                data = json.loads(response.read().decode())
+
+            if data.get("syncedLyrics") and synced_enabled:
+                result = self._parse_lrc(data["syncedLyrics"], synced_enabled)
+                if result["type"] == "synced":
+                    return result
+            if data.get("plainLyrics"):
+                return {"type": "unsynced", "text": data["plainLyrics"]}
+        except Exception:
+            pass
+        return {"type": "none"}

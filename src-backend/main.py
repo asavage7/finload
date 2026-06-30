@@ -1,19 +1,26 @@
-# src-backend/main.py
 from time import time
-
-from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, Body
+from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, Body, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from database import DatabaseManager, Artist, Album, Track, QueueItem
-from jellyfin_bridge import JellyfinBridge
+import uuid
+from database import DatabaseManager, Artist, Album, Track, TrackLyrics, QueueItem, Playlist, PlaylistTrack, db as peewee_db, switch_database
+from providers import create_provider
+from settings_manager import SettingsManager
+from peewee import fn, JOIN
 from playback_manager import PlaybackManager
-from config import get_backend_host, get_backend_port, get_cors_origins, get_jellyfin_config
+from sync_manager import SyncManager
+from metadata_manager import MetadataManager
+from config import get_backend_host, get_backend_port, get_cors_origins
 from collections import defaultdict
-from colorthief import ColorThief
+import datetime
+import json
+import random
+import threading
+import colorsys
+from PIL import Image
 import uvicorn
 import asyncio
 import os
-import threading
 
 app = FastAPI()
 
@@ -21,18 +28,23 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
 db = DatabaseManager()
-server_url, api_key, user_id = get_jellyfin_config()
-bridge = JellyfinBridge(
-    server_url=server_url,
-    api_key=api_key,
-    user_id=user_id,
-)
-playback = PlaybackManager(bridge)
+settings = SettingsManager()
+provider = create_provider(settings)
+# PlaybackManager creates the mpv core (and opens an audio output). Defer it to
+# startup so it's built only in the worker that actually serves requests — not in
+# uvicorn's --reload supervisor, which imports this module but never runs startup
+# events. That avoids a second, idle mpv instance during development.
+playback: PlaybackManager = None  # type: ignore[assignment]
+sync = SyncManager(db)
+metadata = MetadataManager(settings)
+sync.metadata = metadata  # SyncManager triggers enrichment after successful sync
+
+_accent_color_cache: dict[str, list] = {}
 
 
 def _get_env_flag(name: str, default: bool = False) -> bool:
@@ -42,91 +54,180 @@ def _get_env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def sync_library(db_manager: DatabaseManager, bridge_client: JellyfinBridge):
-    try:
-        print("--- Starting library sync ---")
-        local_ids = set(Track.select(Track.id).scalars())
-        server_ids = bridge_client.fetch_all_ids()
+def _exit_when_orphaned():
+    """Exit the process if our parent (the Tauri app) dies.
 
-        stale_ids = local_ids - server_ids
-        new_ids = server_ids - local_ids
-
-        print(f"Local tracks: {len(local_ids)}")
-        print(f"Remote tracks: {len(server_ids)}")
-        print(f"Sync: {len(stale_ids)} to remove, {len(new_ids)} to add")
-
-        if stale_ids:
-            Track.delete().where(Track.id << list(stale_ids)).execute()
-
-        if new_ids:
-            for item in bridge_client.fetch_audio_by_ids(list(new_ids)):
-                for artist in item["artists"]:
-                    db_manager.upsert_artist(**artist)
-
-                db_manager.upsert_album(**item["album_data"])
-                db_manager.upsert_track(**item["track_data"])
-
-        print("--- Library sync complete ---")
-    except Exception as exc:
-        print(f"Library sync failed: {exc}")
+    Tauri kills this sidecar on a normal quit, but if the app is force-killed the
+    sidecar would be reparented and linger as an orphaned uvicorn. Detect that by
+    watching for a change in our parent PID and hard-exit when it happens.
+    """
+    initial_ppid = os.getppid()
+    stop = threading.Event()
+    while not stop.wait(2.0):
+        if os.getppid() != initial_ppid:
+            os._exit(0)
 
 
 @app.on_event("startup")
 def startup_sync_library():
+    global playback
+    if playback is None:
+        playback = PlaybackManager(provider, settings)
+    threading.Thread(target=_exit_when_orphaned, daemon=True).start()
     if _get_env_flag("INITIAL_FULL_SYNC", False):
-        threading.Thread(target=sync_library, args=(db, bridge), daemon=True).start()
+        sync.start(provider)
 
-# --- CORE DATA ROUTES ---
+
+# --- LIBRARY ROUTES ---
+
+_ARTIST_SORT_FIELDS = {"name", "album_count", "duration_ms"}
+
+def _artist_order_expr(sort_by: str, sort_order: str):
+    asc = sort_order == "asc"
+    secondary = Artist.name.collate("NOCASE").asc()
+    if sort_by == "album_count":
+        primary = fn.COUNT(Album.id.distinct()).asc() if asc else fn.COUNT(Album.id.distinct()).desc()
+    elif sort_by == "duration_ms":
+        primary = fn.SUM(Track.duration_ms).asc() if asc else fn.SUM(Track.duration_ms).desc()
+    else:
+        primary = Artist.name.collate("NOCASE").asc() if asc else Artist.name.collate("NOCASE").desc()
+    return primary, secondary
+
+@app.get("/api/artists/count")
+def get_artists_count():
+    return {"count": Artist.select().count()}
+
 @app.get("/api/artists")
-def get_artists():
-    artists = Artist.select()
-    return [{"id": a.secondary_id, "name": a.name} for a in artists]
+def get_artists(sort_by: str = "name", sort_order: str = "asc",
+                start_index: int | None = None, end_index: int | None = None):
+    if sort_by not in _ARTIST_SORT_FIELDS:
+        sort_by = "name"
+    if sort_order not in ("asc", "desc"):
+        sort_order = "asc"
+    primary, secondary = _artist_order_expr(sort_by, sort_order)
+    artists = (Artist.select(
+                   Artist,
+                   fn.COUNT(Album.id.distinct()).alias("album_count"),
+                   fn.SUM(Track.duration_ms).alias("total_ms"),
+               )
+               .join(Album, JOIN.LEFT_OUTER, on=(Album.artist == Artist.id))
+               .join(Track, JOIN.LEFT_OUTER, on=(Track.album == Album.id))
+               .group_by(Artist.id)
+               .order_by(primary, secondary))
+    if start_index is not None and end_index is not None:
+        artists = artists.offset(start_index).limit(end_index - start_index + 1)
+    return [
+        {
+            "id": a.id,
+            "name": a.name,
+            "album_count": a.album_count or 0,
+            "duration_ms": a.total_ms or 0,
+        }
+        for a in artists
+    ]
+
+_ALBUM_SORT_FIELDS = {"title", "artist", "release_year", "rating", "track_count", "duration_ms"}
+
+def _album_order_expr(sort_by: str, sort_order: str):
+    asc = sort_order == "asc"
+    secondary = Album.title.collate("NOCASE").asc()
+    if sort_by == "title":
+        primary = Album.title.collate("NOCASE").asc() if asc else Album.title.collate("NOCASE").desc()
+    elif sort_by == "artist":
+        primary = Artist.name.collate("NOCASE").asc() if asc else Artist.name.collate("NOCASE").desc()
+    elif sort_by == "release_year":
+        primary = Album.release_year.asc() if asc else Album.release_year.desc()
+    elif sort_by == "rating":
+        primary = Album.rating.asc() if asc else Album.rating.desc()
+    elif sort_by == "track_count":
+        primary = fn.COUNT(Track.id).asc() if asc else fn.COUNT(Track.id).desc()
+    else:  # duration_ms
+        primary = fn.SUM(Track.duration_ms).asc() if asc else fn.SUM(Track.duration_ms).desc()
+    return primary, secondary
+
+@app.get("/api/albums/count")
+def get_albums_count():
+    return {"count": Album.select().count()}
 
 @app.get("/api/albums")
-def get_albums(sort_by: str = "title"):
-    albums = Album.select(Album, Artist).join(Artist).order_by(getattr(Album, sort_by).asc())
+def get_albums(sort_by: str = "title", sort_order: str = "asc",
+               start_index: int | None = None, end_index: int | None = None):
+    if sort_by not in _ALBUM_SORT_FIELDS:
+        sort_by = "title"
+    if sort_order not in ("asc", "desc"):
+        sort_order = "asc"
+    primary, secondary = _album_order_expr(sort_by, sort_order)
+    albums = (Album.select(
+                  Album, Artist,
+                  fn.COUNT(Track.id).alias("track_count"),
+                  fn.SUM(Track.duration_ms).alias("total_ms"),
+              )
+              .join(Artist)
+              .switch(Album)
+              .join(Track, JOIN.LEFT_OUTER, on=(Track.album == Album.id))
+              .group_by(Album.id)
+              .order_by(primary, secondary))
+    if start_index is not None and end_index is not None:
+        albums = albums.offset(start_index).limit(end_index - start_index + 1)
     return [
         {
-            "id": str(a.id), 
-            "title": str(a.title), 
+            "id": str(a.id),
+            "title": str(a.title),
             "artist_name": str(a.artist.name),
-            "artist_id": str(a.artist.secondary_id) if a.artist else None,
+            "artist_id": str(a.artist.id) if a.artist else None,
             "release_year": a.release_year,
-            "duration_ms": sum(t.duration_ms for t in Track.select().where(Track.album == a.id))
-        } 
+            "rating": a.rating,
+            "track_count": a.track_count or 0,
+            "duration_ms": a.total_ms or 0,
+        }
         for a in albums
     ]
-    
+
+_TRACK_SORT_FIELDS = {"title", "artist", "duration_ms", "rating"}
+
+def _track_order_expr(sort_by: str, sort_order: str):
+    asc = sort_order == "asc"
+    secondary = Track.title.collate("NOCASE").asc()
+    if sort_by == "title":
+        primary = Track.title.collate("NOCASE").asc() if asc else Track.title.collate("NOCASE").desc()
+    elif sort_by == "artist":
+        primary = Artist.name.collate("NOCASE").asc() if asc else Artist.name.collate("NOCASE").desc()
+    elif sort_by == "duration_ms":
+        primary = Track.duration_ms.asc() if asc else Track.duration_ms.desc()
+    else:  # rating
+        primary = Track.rating.asc() if asc else Track.rating.desc()
+    return primary, secondary
+
+@app.get("/api/tracks/count")
+def get_tracks_count():
+    return {"count": Track.select().count()}
+
 @app.get("/api/tracks")
-def get_tracks(sort_by: str = "title"):
-    start_time = time()
-    tracks = Track.select(Track, Album, Artist).join(Album).join(Artist).order_by(getattr(Track, sort_by).asc())
+def get_tracks(sort_by: str = "title", sort_order: str = "asc",
+               start_index: int | None = None, end_index: int | None = None):
+    if sort_by not in _TRACK_SORT_FIELDS:
+        sort_by = "title"
+    if sort_order not in ("asc", "desc"):
+        sort_order = "asc"
+    primary, secondary = _track_order_expr(sort_by, sort_order)
+    tracks = (Track.select(Track, Album, Artist)
+              .join(Album)
+              .join(Artist)
+              .order_by(primary, secondary))
+    if start_index is not None and end_index is not None:
+        tracks = tracks.offset(start_index).limit(end_index - start_index + 1)
     return [
         {
-            "id": str(t.id), 
+            "id": str(t.id),
             "album_id": str(t.album.id),
-            "title": str(t.title), 
+            "title": str(t.title),
             "artist_name": str(t.artist.name),
             "album_title": str(t.album.title),
-            "duration_ms": t.duration_ms
-        } 
+            "rating": t.rating,
+            "duration_ms": t.duration_ms,
+        }
         for t in tracks
     ]
-    print(f"Fetched tracks in {time() - start_time:.2f} seconds")
-    
-def calculate_brightness(rgb) -> float:
-    return (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255.0
-
-def calculate_saturation(rgb) -> float:
-    r, g, b = [c / 255.0 for c in rgb]
-    mx = max(r, g, b)
-    mn = min(r, g, b)
-    if mx == mn:
-        return 0
-    return (mx - mn) / (mx) * max(1, calculate_brightness(rgb) * 1.25)
-
-def rgb_to_hex(rgb):
-    return '#{:02x}{:02x}{:02x}'.format(*rgb)
 
 @app.get("/api/album/{album_id}")
 def get_album_details(album_id: str):
@@ -139,7 +240,7 @@ def get_album_details(album_id: str):
                         .join(Artist, on=(Track.artist == Artist.id))
                         .where(Track.album == album_id)
                         .order_by(Track.disc_number, Track.track_number))
-        
+
         discs_map = defaultdict(list)
         for t in tracks_query:
             d_num = t.disc_number if (t.disc_number and t.disc_number > 0) else 1
@@ -148,162 +249,744 @@ def get_album_details(album_id: str):
                 "title": t.title,
                 "track_number": t.track_number,
                 "duration_ms": t.duration_ms,
-                "artist_name": t.artist.name if t.artist else "Unknown Artist"
+                "artist_name": t.artist.name if t.artist else "Unknown Artist",
+                "rating": t.rating,
             })
-            
+
         discs_list = [{"disc_number": d_num, "tracks": discs_map[d_num]} for d_num in sorted(discs_map.keys())]
-        
+
         return {
             "album": {
                 "id": album.id,
                 "title": album.title,
                 "artist_name": album.artist.name if album.artist else "Unknown Artist",
-                "artist_id": album.artist.secondary_id if album.artist else None,
+                "artist_id": album.artist.id if album.artist else None,
                 "release_year": album.release_year,
+                "rating": album.rating,
+                "description": album.description,
             },
             "discs": discs_list
         }
+    except HTTPException:
+        raise  # Don't let the 404 below get re-wrapped as a 500.
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-@app.get("/api/{item_id}/accent-colors")
-def get_accent_colors(item_id: str, debug: bool = False):
-    if debug:
-        start_time = time()
-    
-    cache_path = os.path.join(bridge.cache_dir, f"{item_id}_400.jpg")
-    to_hex = lambda rgb: "#{:02x}{:02x}{:02x}".format(*rgb)
-    
-    if not os.path.exists(cache_path):
-        return {"error": "Image not found"}
-        
-    try:
-        palette = ColorThief(cache_path).get_palette(color_count=15, quality=25)
-        if debug:
-            print(f"Extracted palette for album {item_id}: {palette}")
-        
-        def calculate_score(rgb, index):
-            saturation = calculate_saturation(rgb)
-            brightness_penalty = calculate_brightness(rgb) < 0.3
-            score = (15 / ((index + 1))) + (60 * saturation) - (brightness_penalty * 20)
-            if debug:
-                print(f"Color: {str(rgb):>20}, Saturation: {saturation:.2f}, Brightness: {calculate_brightness(rgb):.2f},  Brightness Penalty: {brightness_penalty}, Score: {score:.2f}")
-            return score
-        
-        accent = list(max(palette, key=lambda c: calculate_score(c, palette.index(c))))
-        
-        def get_contrast(rgb):
-            lum = sum(w * (c/3294.6 if c <= 10 else ((c/255 + 0.055)/1.055)**2.4) 
-                      for c, w in zip(rgb, [0.2126, 0.7152, 0.0722]))
-            return 1.05 / (lum + 0.05)
-        
-        while get_contrast(accent) < 4.5:
-            accent = [int(c * 0.9) for c in accent]
-            
-        # Find the most prominent light and dark colors for primary/background use, ensuring good contrast with the accent
-        light_candidates = [c for c in sorted(palette, key=lambda c: calculate_score(c, palette.index(c)), reverse=True) if calculate_brightness(c) > 0.75]
-        if light_candidates:
-            light_primary = [int(c1) for c1 in light_candidates[0]]
-        else:
-            light_primary = [int(c1 * 1.5) for c1 in accent]
-        
-        dark_primary = [int(c1 * 0.2) for c1 in accent]
-        if debug:
-            print(f"Accent: {accent}, Light Primary: {light_primary}, Dark Primary: {dark_primary}")
-            print(f"Color extraction for {item_id} took {time() - start_time:.2f} seconds")
-        return [to_hex(accent), to_hex(light_primary), to_hex(dark_primary)]
-        
-    except Exception as e:
-        print(f"Color extraction skipped: {e}")
-        return {"error": str(e)}
-    
-@app.get("/api/album/{album_id}/accent-colors")
-def get_album_accent_colors(album_id: str):
-    return get_accent_colors(album_id)
 
-@app.get("/api/track/{track_id}/accent-colors")
-def get_track_accent_colors(track_id: str):
-    return get_accent_colors(track_id)
-
-@app.get("/api/artist/{artist_id}/accent-colors")
-def get_artist_accent_colors(artist_id: str):
-    return get_accent_colors(artist_id)
+@app.get("/api/album/{album_id}/tracks")
+def get_album_tracks(album_id: str):
+    tracks = (Track.select(Track, Artist)
+              .join(Artist, on=(Track.artist == Artist.id))
+              .where(Track.album == album_id)
+              .order_by(Track.disc_number, Track.track_number))
+    return [
+        {
+            "id": t.id,
+            "title": t.title,
+            "track_number": t.track_number,
+            "disc_number": t.disc_number,
+            "duration_ms": t.duration_ms,
+            "rating": t.rating,
+            "artist_name": t.artist.name if t.artist else "Unknown Artist",
+        }
+        for t in tracks
+    ]
 
 @app.get("/api/artist/{artist_id}")
 def get_artist_details(artist_id: str):
-    artist = Artist.get_or_none(Artist.secondary_id == artist_id)
+    artist = Artist.get_or_none(Artist.id == artist_id)
     if not artist:
         raise HTTPException(status_code=404, detail="Artist not found")
+
+    artist_albums = list(Album.select().where(Album.artist == artist.id).order_by(Album.release_year.desc()))
+    album_ids = [a.id for a in artist_albums]
+
+    duration_map = {
+        row.album: row.total
+        for row in Track.select(Track.album, fn.SUM(Track.duration_ms).alias("total"))
+                        .where(Track.album << album_ids)
+                        .group_by(Track.album)
+                        .namedtuples()
+    } if album_ids else {}
+
+    tracks_count = Track.select(fn.COUNT(Track.id)).where(Track.artist == artist.id).scalar() or 0
+
     return {
         "artist": {
-            "id": artist.secondary_id,
+            "id": artist.id,
             "name": artist.name,
-            "albums_count": Album.select().where(Album.artist == artist.id).count(),
-            "tracks_count": Track.select().where(Track.artist == artist.id).count(),
-            "total_duration_ms": sum(t.duration_ms for t in Track.select().where(Track.artist == artist.id))
+            "bio": artist.bio,
+            "albums_count": len(artist_albums),
+            "tracks_count": tracks_count,
+            "total_duration_ms": sum(duration_map.values())
         },
         "albums": [
             {
-                "id": str(a.id), 
-                "title": str(a.title), 
-                "duration_ms": sum(t.duration_ms for t in Track.select().where(Track.album == a.id)),
-                "release_year": a.release_year
-            } 
-            for a in Album.select().where(Album.artist == artist.id).order_by(Album.release_year.desc())
+                "id": str(a.id),
+                "title": str(a.title),
+                "duration_ms": duration_map.get(a.id, 0),
+                "release_year": a.release_year,
+                "rating": a.rating,
+            }
+            for a in artist_albums
         ]
     }
-    
+
+@app.get("/api/artist/{artist_id}/tracks")
+def get_artist_tracks(artist_id: str):
+    artist = Artist.get_or_none(Artist.id == artist_id)
+    if not artist:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    tracks = (Track.select(Track, Album, Artist)
+              .join(Album).switch(Track).join(Artist)
+              .where(Track.artist == artist.id)
+              .order_by(Album.release_year, Track.disc_number, Track.track_number))
+    return [
+        {
+            "id": t.id,
+            "title": t.title,
+            "album_title": t.album.title if t.album else "Unknown Album",
+            "duration_ms": t.duration_ms,
+            "rating": t.rating,
+            "artist_name": t.artist.name if t.artist else "Unknown Artist",
+        }
+        for t in tracks
+    ]
+
+@app.get("/api/album/{album_id}/rating")
+def get_album_rating(album_id: str):
+    album = Album.get_or_none(Album.id == album_id)
+    if not album:
+        raise HTTPException(status_code=404, detail="Album not found")
+    return {"rating": album.rating}
+
+@app.patch("/api/album/{album_id}/rating")
+def update_album_rating(album_id: str, rating: int = Body(..., embed=True)):
+    album = Album.get_or_none(Album.id == album_id)
+    if not album:
+        raise HTTPException(status_code=404, detail="Album not found")
+    if not (0 <= rating <= 5):
+        raise HTTPException(status_code=422, detail="Rating must be between 0 and 5")
+    album.rating = rating
+    album.save()
+    return {"rating": album.rating}
+
+@app.get("/api/track/{track_id}/rating")
+def get_track_rating(track_id: str):
+    track = Track.get_or_none(Track.id == track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+    return {"rating": track.rating}
+
+@app.patch("/api/track/{track_id}/rating")
+def update_track_rating(track_id: str, rating: int = Body(..., embed=True)):
+    track = Track.get_or_none(Track.id == track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+    if not (0 <= rating <= 5):
+        raise HTTPException(status_code=422, detail="Rating must be between 0 and 5")
+    track.rating = rating
+    track.save()
+    return {"rating": track.rating}
+
+@app.get("/api/track/{track_id}/lyrics")
+def get_track_lyrics(track_id: str, force: bool = False):
+    if not force:
+        cached = TrackLyrics.get_or_none(TrackLyrics.track == track_id)
+        if cached:
+            if cached.lyrics_type == "synced":
+                return {"type": "synced", "lines": json.loads(cached.content)}
+            if cached.lyrics_type == "unsynced":
+                return {"type": "unsynced", "text": cached.content}
+            return {"type": "none"}
+
+    result = provider.get_lyrics(
+        track_id,
+        lrclib_enabled=settings.get("enable_lrclib_lyrics"),
+        synced_enabled=settings.get("enable_synced_lyrics"),
+    )
+
+    content = None
+    if result["type"] == "synced":
+        content = json.dumps(result["lines"])
+    elif result["type"] == "unsynced":
+        content = result.get("text")
+
+    (TrackLyrics.insert(
+        track=track_id,
+        lyrics_type=result["type"],
+        content=content,
+        fetched_at=datetime.datetime.now(),
+    ).on_conflict(
+        conflict_target=[TrackLyrics.track],
+        update={
+            TrackLyrics.lyrics_type: result["type"],
+            TrackLyrics.content: content,
+            TrackLyrics.fetched_at: datetime.datetime.now(),
+        },
+    ).execute())
+
+    return result
+
+
+# --- IMAGE ROUTES ---
+
+def _get_playlist_image_dir() -> str:
+    image_dir = os.path.join(os.path.dirname(peewee_db.database), "playlist_images")
+    os.makedirs(image_dir, exist_ok=True)
+    return image_dir
+
+def _get_playlist_image_path(playlist_id: str) -> str:
+    return os.path.join(_get_playlist_image_dir(), f"{playlist_id}.jpg")
+
+# Mutable images (user-uploaded playlist covers, enrichment fanart) must not be
+# cached by the browser — they're re-fetched with a cache-busting param when they
+# change. The frontend bumps that param via playlistCoverTimestamps.
+_IMAGE_CACHE_HEADERS = {"Cache-Control": "no-store"}
+# Album/track/artist art is content-addressed by {item_id}_{size}, so it's
+# effectively immutable — let the browser cache it hard to avoid re-fetching
+# every cover on each virtualized scroll.
+_IMMUTABLE_IMAGE_HEADERS = {"Cache-Control": "public, max-age=604800, immutable"}
+
 @app.get("/api/image/{item_id}")
-def get_image(item_id: str, size: int = 0, type: str = "album"):
-    """
-    Returns an image. Accepts an optional ?size=400 query parameter for width in pixels.
-    size=0 returns the original image.
-    """
+def get_image(item_id: str, size: int = 0, type: str = "album", variant: str = ""):
+    if variant == "fanart":
+        from platformdirs import user_cache_dir
+        fanart_path = os.path.join(user_cache_dir("finload"), f"{item_id}_fanart.jpg")
+        if os.path.exists(fanart_path):
+            return FileResponse(fanart_path, headers=_IMAGE_CACHE_HEADERS)
+        raise HTTPException(status_code=404, detail="Fanart not found")
+
+    if type == "playlist":
+        image_path = _get_playlist_image_path(item_id)
+        if os.path.exists(image_path):
+            return FileResponse(image_path, headers=_IMAGE_CACHE_HEADERS)
+        raise HTTPException(status_code=404, detail="Playlist image not found")
+
     if size > 2000:
         size = 2000
 
-    suffix = str(size) if size > 0 else "original"
-    cache_path = os.path.join(bridge.cache_dir, f"{item_id}_{suffix}.jpg")
-    
+    cache_path = provider.get_cached_image_path(item_id, size)
+
     if os.path.exists(cache_path):
-        return FileResponse(cache_path)
-        
-    success = bridge.download_image_to_cache(item_id, size)
-    
+        return FileResponse(cache_path, headers=_IMMUTABLE_IMAGE_HEADERS)
+
+    success = provider.download_image_to_cache(item_id, size)
+    if success:
+        _accent_color_cache.pop(item_id, None)
+
     if success and os.path.exists(cache_path):
-        return FileResponse(cache_path)
+        return FileResponse(cache_path, headers=_IMMUTABLE_IMAGE_HEADERS)
     if not success and type == "track":
-        album_id = Track.get_or_none(Track.id == item_id).album.id
-        cache_path = os.path.join(bridge.cache_dir, f"{album_id}_{suffix}.jpg")
-        
+        track = Track.get_or_none(Track.id == item_id)
+        if not track:
+            raise HTTPException(status_code=404, detail="Image not found")
+        album_id = track.album_id
+        cache_path = provider.get_cached_image_path(album_id, size)
+
         if os.path.exists(cache_path):
-            return FileResponse(cache_path)
-        
-        success = bridge.download_image_to_cache(album_id, size)
+            return FileResponse(cache_path, headers=_IMMUTABLE_IMAGE_HEADERS)
+
+        success = provider.download_image_to_cache(album_id, size)
+        if success:
+            _accent_color_cache.pop(str(album_id), None)
         if success and os.path.exists(cache_path):
-            return FileResponse(cache_path)
-        
+            return FileResponse(cache_path, headers=_IMMUTABLE_IMAGE_HEADERS)
+
     raise HTTPException(status_code=404, detail="Image not found")
+
+
+# --- ACCENT COLOR ROUTES ---
+
+_ACCENT_CHROMA_EXP = 1.5
+_ACCENT_CONTRAST_EXP = 2.0
+_ACCENT_MIN_STANDOUT = 3.0
+_ACCENT_DARK_FLOOR_L = 0.15
+_SECONDARY_MIN_HUE_DIST = 10  # degrees from the accent hue to count as a distinct color
+_SECONDARY_MIN_CHROMA = 0.12  # must be a real color, not a near-grey
+_SECONDARY_MIN_SHARE = 0.02   # min fraction of pixels to be "prevalent"
+_LIGHT_TARGET_L = 0.80        # lightness the secondary color is raised to for text use
+_TEXT_CONTRAST = 4.5          # WCAG AA: white-on-accent and light-on-dark
+
+def _to_hls(rgb):
+    """RGB 0-255 -> (hue, lightness, saturation), each 0..1."""
+    return colorsys.rgb_to_hls(*[c / 255 for c in rgb])
+
+def _to_rgb(h, l, s):
+    """(hue, lightness, saturation) 0..1 -> clamped RGB ints 0-255."""
+    return [max(0, min(255, round(c * 255))) for c in colorsys.hls_to_rgb(h, l, s)]
+
+def rgb_to_hex(rgb):
+    return '#{:02x}{:02x}{:02x}'.format(*rgb)
+
+def _luminance(rgb):
+    def lin(c):
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (lin(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+def _contrast(a, b):
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+def _chroma(l, s):
+    """Colorfulness: 0 at pure black/white, peaks at mid lightness."""
+    return s * (1 - abs(2 * l - 1))
+
+def _hue_dist(h1, h2):
+    """Shortest distance between two hues, in degrees (0..180)."""
+    d = abs(h1 - h2) * 360
+    return min(d, 360 - d)
+
+def _extract_palette(path, size=220, colors=16):
+    """Return [(rgb, share)] ordered by pixel prevalence, where share is the
+    fraction of pixels that color represents."""
+    im = Image.open(path)
+    im.draft("RGB", (size, size))   # fast JPEG downscale during decode
+    im = im.convert("RGB")
+    im.thumbnail((size, size))
+    quant = im.quantize(colors=colors, method=Image.Quantize.FASTOCTREE)
+    pal = quant.getpalette()
+    total = im.width * im.height
+    counts = quant.getcolors(maxcolors=colors) or []
+    return [((pal[idx * 3], pal[idx * 3 + 1], pal[idx * 3 + 2]), n / total)
+            for n, idx in sorted(counts, reverse=True)]
+
+def _get_accent_colors(item_id: str, debug: bool = False, image_path: str = None):
+    if item_id in _accent_color_cache:
+        return _accent_color_cache[item_id]
+
+    cache_path = image_path or provider.get_cached_image_path(item_id, 220)
+    if not os.path.exists(cache_path):
+        return {"error": "Image not found"}
+
+    start_time = time() if debug else 0.0
+
+    try:
+        palette = _extract_palette(cache_path)
+
+        # --- Accent: the color that "pops" against the artwork — colorful,
+        # prevalent, and already readable under white text (so darkening it for
+        # contrast won't muddy it). This deliberately favors a vivid minority
+        # color over a large flat background (e.g. red over a blue sky). ---
+        def accent_fitness(rgb, share):
+            _, l, s = _to_hls(rgb)
+            white_fit = min(_contrast((255, 255, 255), rgb) / _TEXT_CONTRAST, 1.0)
+            dark_fade = min(1.0, l / _ACCENT_DARK_FLOOR_L)   # near-black reads as black, not hue
+            return (_chroma(l, s) ** _ACCENT_CHROMA_EXP) * share * (white_fit ** _ACCENT_CONTRAST_EXP) * dark_fade
+
+        best_rgb = max(palette, key=lambda entry: accent_fitness(*entry))[0]
+        ah, al, as_ = _to_hls(best_rgb)
+
+        # --- Dark background: accent hue at low lightness. ---
+        dark_primary = _to_rgb(ah, 0.12, min(as_, 0.5))
+
+        # Place the accent (lightness only, hue/saturation preserved) so white text
+        # on it stays AA-readable, yet it still stands out on the dark background.
+        # First darken if it's too light to read; then, if it's so dark it would
+        # sink into dark_primary, lighten it back toward standout (mirroring how the
+        # light accent is lifted), never past the point where white text drops below AA.
+        while _contrast((255, 255, 255), _to_rgb(ah, al, as_)) < _TEXT_CONTRAST and al > 0.05:
+            al -= 0.02
+        while (_contrast(_to_rgb(ah, al, as_), dark_primary) < _ACCENT_MIN_STANDOUT
+               and _contrast((255, 255, 255), _to_rgb(ah, al + 0.02, as_)) >= _TEXT_CONTRAST
+               and al < 0.95):
+            al += 0.02
+        accent = _to_rgb(ah, al, as_)
+
+        # --- Light accent: a second, distinct prevalent color (a different hue
+        # from the accent) makes the UI pop; it's then lightened for use as text.
+        # Falls back to a tint of the accent hue when the art is monochromatic. ---
+        secondary, best_secondary = None, 0.0
+        for rgb, share in palette:
+            h, l, s = _to_hls(rgb)
+            if share < _SECONDARY_MIN_SHARE or _chroma(l, s) < _SECONDARY_MIN_CHROMA:
+                continue
+            if _hue_dist(h, ah) < _SECONDARY_MIN_HUE_DIST:
+                continue
+            score = share * (0.2 + _chroma(l, s))       # prevalence weighted by vividness
+            if score > best_secondary:
+                best_secondary, secondary = score, rgb
+
+        if secondary is not None:
+            sh, sl, ss = _to_hls(secondary)
+            light_primary = _to_rgb(sh, max(sl, _LIGHT_TARGET_L), ss)
+        else:
+            light_primary = _to_rgb(ah, 0.85, min(as_, 0.45))
+
+        # Guarantee the light text stays readable on the dark background.
+        lh, ll, ls = _to_hls(light_primary)
+        while _contrast(light_primary, dark_primary) < _TEXT_CONTRAST and ll < 0.96:
+            ll += 0.02
+            light_primary = _to_rgb(lh, ll, ls)
+
+        result = [rgb_to_hex(accent), rgb_to_hex(light_primary), rgb_to_hex(dark_primary)]
+        _accent_color_cache[item_id] = result
+        if debug:
+            print(f"Accent colors for {item_id}: {result} "
+                  f"in {(time() - start_time) * 1000:.1f}ms")
+        return result
+
+    except Exception as e:
+        print(f"Color extraction skipped: {e}")
+        return {"error": str(e)}
+
+@app.get("/api/album/{album_id}/accent-colors")
+def get_album_accent_colors(album_id: str):
+    return _get_accent_colors(album_id)
+
+@app.get("/api/track/{track_id}/accent-colors")
+def get_track_accent_colors(track_id: str):
+    return _get_accent_colors(track_id)
+
+@app.get("/api/artist/{artist_id}/accent-colors")
+def get_artist_accent_colors(artist_id: str):
+    return _get_accent_colors(artist_id)
+
+@app.get("/api/playlist/{playlist_id}/accent-colors")
+def get_playlist_accent_colors(playlist_id: str):
+    custom_image = _get_playlist_image_path(playlist_id)
+    if os.path.exists(custom_image):
+        return _get_accent_colors(playlist_id, image_path=custom_image)
+    first = (PlaylistTrack.select(PlaylistTrack, Track)
+             .join(Track)
+             .where(PlaylistTrack.playlist == playlist_id)
+             .order_by(PlaylistTrack.position)
+             .first())
+    if first:
+        return _get_accent_colors(str(first.track.album_id))
+    return {"error": "No image available"}
+
+
+# --- PLAYLIST ROUTES ---
+
+_PLAYLIST_SORT_FIELDS = {"name", "track_count", "duration_ms"}
+
+def _playlist_order_expr(sort_by: str, sort_order: str):
+    asc = sort_order == "asc"
+    secondary = Playlist.name.collate("NOCASE").asc()
+    if sort_by == "track_count":
+        primary = fn.COUNT(PlaylistTrack.id).asc() if asc else fn.COUNT(PlaylistTrack.id).desc()
+    elif sort_by == "duration_ms":
+        primary = fn.SUM(Track.duration_ms).asc() if asc else fn.SUM(Track.duration_ms).desc()
+    else:  # name
+        primary = Playlist.name.collate("NOCASE").asc() if asc else Playlist.name.collate("NOCASE").desc()
+    return primary, secondary
+
+@app.get("/api/playlists/count")
+def get_playlists_count():
+    return {"count": Playlist.select().count()}
+
+@app.get("/api/playlists")
+def get_playlists(sort_by: str = "name", sort_order: str = "asc",
+                  start_index: int | None = None, end_index: int | None = None):
+    if sort_by not in _PLAYLIST_SORT_FIELDS:
+        sort_by = "name"
+    if sort_order not in ("asc", "desc"):
+        sort_order = "asc"
+    primary, secondary = _playlist_order_expr(sort_by, sort_order)
+    playlists = (Playlist.select(
+                     Playlist,
+                     fn.COUNT(PlaylistTrack.id).alias("track_count"),
+                     fn.SUM(Track.duration_ms).alias("total_ms"),
+                 )
+                 .join(PlaylistTrack, JOIN.LEFT_OUTER)
+                 .join(Track, JOIN.LEFT_OUTER)
+                 .group_by(Playlist.id)
+                 .order_by(primary, secondary))
+    if start_index is not None and end_index is not None:
+        playlists = playlists.offset(start_index).limit(end_index - start_index + 1)
+    # Gather up to 4 unique album IDs per playlist for cover art (preserving position order)
+    all_playlist_ids = [p.id for p in playlists]
+    album_ids_map: dict[str, list[str]] = {pid: [] for pid in all_playlist_ids}
+    for item in (PlaylistTrack.select(PlaylistTrack, Track)
+                 .join(Track)
+                 .where(PlaylistTrack.playlist << all_playlist_ids)
+                 .order_by(PlaylistTrack.playlist, PlaylistTrack.position)):
+        pid = str(item.playlist_id)
+        album_id = str(item.track.album_id)
+        ids = album_ids_map.get(pid, [])
+        if len(ids) < 4 and album_id not in ids:
+            ids.append(album_id)
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "description": p.description,
+            "track_count": p.track_count or 0,
+            "duration_ms": p.total_ms or 0,
+            "first_album_ids": album_ids_map.get(p.id, []),
+        }
+        for p in playlists
+    ]
+
+@app.post("/api/playlists")
+def create_playlist(name: str = Body(..., embed=True), description: str = Body("", embed=True)):
+    playlist = Playlist.create(id=str(uuid.uuid4()), name=name, description=description)
+    return {"id": playlist.id, "name": playlist.name, "description": playlist.description}
+
+@app.get("/api/playlist/{playlist_id}")
+def get_playlist_details(playlist_id: str):
+    playlist = Playlist.get_or_none(Playlist.id == playlist_id)
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    items = (PlaylistTrack.select(PlaylistTrack, Track, Artist, Album)
+             .join(Track)
+             .join(Artist, on=(Track.artist == Artist.id))
+             .switch(Track)
+             .join(Album, on=(Track.album == Album.id))
+             .where(PlaylistTrack.playlist == playlist_id)
+             .order_by(PlaylistTrack.position))
+    tracks = [
+        {
+            "item_id": item.id,
+            "id": item.track.id,
+            "title": item.track.title,
+            "artist_name": item.track.artist.name if item.track.artist else "Unknown",
+            "album_name": item.track.album.title if item.track.album else "Unknown",
+            "album_id": str(item.track.album.id) if item.track.album else None,
+            "duration_ms": item.track.duration_ms,
+            "rating": item.track.rating,
+        }
+        for item in items
+    ]
+    return {
+        "playlist": {"id": playlist.id, "name": playlist.name, "description": playlist.description},
+        "tracks": tracks,
+    }
+
+@app.patch("/api/playlist/{playlist_id}")
+def update_playlist(playlist_id: str, name: str = Body(None, embed=True), description: str = Body(None, embed=True)):
+    playlist = Playlist.get_or_none(Playlist.id == playlist_id)
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    if name is not None:
+        playlist.name = name
+    if description is not None:
+        playlist.description = description
+    playlist.save()
+    return {"id": playlist.id, "name": playlist.name, "description": playlist.description}
+
+@app.delete("/api/playlist/{playlist_id}")
+def delete_playlist(playlist_id: str):
+    playlist = Playlist.get_or_none(Playlist.id == playlist_id)
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    playlist.delete_instance(recursive=True)
+    image_path = _get_playlist_image_path(playlist_id)
+    if os.path.exists(image_path):
+        os.remove(image_path)
+    return {"status": "deleted"}
+
+@app.post("/api/playlist/{playlist_id}/tracks")
+def add_tracks_to_playlist(playlist_id: str, track_ids: list[str] = Body(..., embed=True)):
+    playlist = Playlist.get_or_none(Playlist.id == playlist_id)
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    last = (PlaylistTrack.select()
+            .where(PlaylistTrack.playlist == playlist_id)
+            .order_by(PlaylistTrack.position.desc())
+            .first())
+    start_pos = (last.position + 1.0) if last else 0.0
+    with peewee_db.atomic():
+        for i, tid in enumerate(track_ids):
+            if Track.get_or_none(Track.id == tid):
+                PlaylistTrack.create(playlist=playlist_id, track=tid, position=start_pos + i)
+    return {"status": "ok"}
+
+@app.delete("/api/playlist/{playlist_id}/tracks")
+def remove_tracks_from_playlist(playlist_id: str, item_ids: list[int] = Body(..., embed=True)):
+    PlaylistTrack.delete().where(
+        (PlaylistTrack.playlist == playlist_id) & (PlaylistTrack.id << item_ids)
+    ).execute()
+    return {"status": "ok"}
+
+@app.patch("/api/playlist/{playlist_id}/tracks/reorder")
+def reorder_playlist_track(playlist_id: str, item_id: int = Body(..., embed=True), new_index: int = Body(..., embed=True)):
+    dragged = PlaylistTrack.get_or_none(
+        (PlaylistTrack.id == item_id) & (PlaylistTrack.playlist == playlist_id)
+    )
+    if not dragged:
+        raise HTTPException(status_code=404, detail="Item not found")
+    sorted_items = list(
+        PlaylistTrack.select()
+        .where((PlaylistTrack.playlist == playlist_id) & (PlaylistTrack.id != item_id))
+        .order_by(PlaylistTrack.position)
+    )
+    if not sorted_items or new_index <= 0:
+        new_pos = (sorted_items[0].position - 1.0) if sorted_items else 0.0
+    elif new_index >= len(sorted_items):
+        new_pos = sorted_items[-1].position + 1.0
+    else:
+        new_pos = (sorted_items[new_index - 1].position + sorted_items[new_index].position) / 2.0
+    dragged.position = new_pos
+    dragged.save()
+    return {"status": "ok"}
+
+@app.get("/api/playlist/{playlist_id}/tracks")
+def get_playlist_tracks(playlist_id: str):
+    items = (PlaylistTrack.select(PlaylistTrack, Track)
+             .join(Track)
+             .where(PlaylistTrack.playlist == playlist_id)
+             .order_by(PlaylistTrack.position))
+    return [{"id": item.track.id, "album_id": str(item.track.album_id) if item.track.album_id else None} for item in items]
+
+@app.post("/api/playlist/{playlist_id}/image")
+async def upload_playlist_image(playlist_id: str, file: UploadFile = File(...)):
+    playlist = Playlist.get_or_none(Playlist.id == playlist_id)
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    content = await file.read()
+    with open(_get_playlist_image_path(playlist_id), "wb") as f:
+        f.write(content)
+    _accent_color_cache.pop(playlist_id, None)
+    return {"status": "ok"}
+
+
+# --- SETTINGS ROUTES ---
+
+@app.get("/api/settings")
+def get_settings():
+    return settings.settings
+
+@app.patch("/api/settings")
+def update_settings(data: dict = Body(...)):
+    global provider, db
+
+    for key, value in data.items():
+        if key in settings.defaults:
+            settings.set(key, value)
+
+    # Switching library source swaps in a different provider *and* its own
+    # database, so the two libraries stay independent. Stop playback first since
+    # the current queue/track lives in the database we're about to swap out.
+    if "library_source" in data:
+        playback.stop_for_source_switch()
+        db = switch_database(settings.get("library_source"))
+        provider = create_provider(settings)
+        playback.provider = provider
+    # Otherwise, if any of the active provider's own settings changed,
+    # reconfigure it live so the user doesn't have to restart the app.
+    elif any(key in data for key in provider.SETTINGS_KEYS):
+        provider.configure(settings)
+
+    return settings.settings
+
+
+# --- SYNC ROUTES ---
+
+@app.post("/api/sync")
+def start_sync():
+    started = sync.start(provider)
+    return {"started": started, "status": sync.state["status"]}
+
+@app.get("/api/sync/status")
+def sync_status():
+    return sync.state
+
+
+# --- METADATA ROUTES ---
+
+@app.get("/api/metadata/status")
+def metadata_status():
+    return metadata.state
+
+@app.post("/api/metadata/enrich")
+def start_enrichment(force: bool = False):
+    """Manually trigger metadata enrichment for all artists/albums."""
+    if not settings.get("enable_online_metadata"):
+        return {"started": False, "status": "disabled"}
+    started = metadata.start_background_enrichment(force=force)
+    return {"started": started, "status": metadata.state["status"]}
+
+
+@app.websocket("/ws/sync")
+async def sync_ws(websocket: WebSocket):
+    await websocket.accept()
+
+    loop = asyncio.get_running_loop()
+
+    def on_update(state):
+        asyncio.run_coroutine_threadsafe(websocket.send_json(state), loop)
+
+    sync.add_listener(on_update)
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            if data.get("action") == "start":
+                sync.start(provider)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        sync.remove_listener(on_update)
+
+
+# --- PLAYBACK ROUTES ---
 
 @app.post("/api/playback/play_track/{track_id}")
 def play_track(track_id: str):
     playback.play_now(track_id, context_ids=[track_id])
     return {"status": "success"}
 
-@app.get("/api/album/{track_id}/lyrics")
-def get_album_lyrics(track_id: str):
-    return bridge.get_lyrics(track_id)
-
 @app.post("/api/playback/play_album/{album_id}")
-def play_album(album_id: str, track_id: str | None = None):
+def play_album(album_id: str, track_id: str | None = None, shuffle: bool = False):
     album = Album.get_or_none(Album.id == album_id)
     if not album:
         raise HTTPException(status_code=404, detail="Album not found")
-    album_tracks = Track.select().where(Track.album == album_id).order_by(Track.disc_number, Track.track_number)
+    album_tracks = list(Track.select().where(Track.album == album_id).order_by(Track.disc_number, Track.track_number))
+    track_ids = [t.id for t in album_tracks]
+    if shuffle:
+        random.shuffle(track_ids)
     try:
-        playback.play_now(track_id or album_tracks[0].id, [t.id for t in album_tracks])
+        playback.play_now(track_id or track_ids[0], track_ids)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "success"}
+
+@app.post("/api/playback/play_artist/{artist_id}")
+def play_artist(artist_id: str, track_id: str | None = None, shuffle: bool = False):
+    artist = Artist.get_or_none(Artist.id == artist_id)
+    if not artist:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    artist_tracks = (Track.select()
+                     .join(Album)
+                     .where(Track.artist == artist.id)
+                     .order_by(Album.release_year, Track.disc_number, Track.track_number))
+    track_ids = [t.id for t in artist_tracks]
+    if not track_ids:
+        raise HTTPException(status_code=404, detail="Artist has no tracks")
+    if shuffle:
+        random.shuffle(track_ids)
+    try:
+        playback.play_now(track_id or track_ids[0], track_ids)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "success"}
+
+@app.post("/api/playback/play_playlist/{playlist_id}")
+def play_playlist(playlist_id: str, track_id: str | None = None, shuffle: bool = False):
+    playlist = Playlist.get_or_none(Playlist.id == playlist_id)
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    items = (PlaylistTrack.select(PlaylistTrack, Track)
+             .join(Track)
+             .where(PlaylistTrack.playlist == playlist_id)
+             .order_by(PlaylistTrack.position))
+    track_ids = [item.track.id for item in items]
+    if not track_ids:
+        raise HTTPException(status_code=400, detail="Playlist is empty")
+    if shuffle:
+        random.shuffle(track_ids)
+    playback.play_now(track_id or track_ids[0], track_ids)
+    return {"status": "success"}
+
+@app.post("/api/playback/play")
+def play(track_id: str | list[str] = Body(..., embed=True)):
+    tracks = [track_id] if isinstance(track_id, str) else track_id
+    if not tracks:
+        raise HTTPException(status_code=400, detail="No tracks provided")
+    playback.play_now(tracks[0], tracks)
     return {"status": "success"}
 
 @app.post("/api/playback/toggle_pause")
@@ -321,17 +1004,27 @@ def skip_prev():
     playback.skip_prev()
     return {"status": "success"}
 
-@app.post("/api/playback/add_to_queue/")
+@app.post("/api/playback/seek/{seconds}")
+def seek(seconds: float):
+    playback.seek(seconds)
+    return {"status": "success"}
+
+@app.post("/api/playback/add_to_queue")
 def add_to_queue(
-    # Body(...) means this field is required in the JSON
-    track_id: str | list[str] = Body(...), 
-    # Body(-1) means look in the JSON, but default to -1 if missing
+    track_id: str | list[str] = Body(...),
     index: int = Body(-1)
 ):
-    # Standardize to a list
     tracks = [track_id] if isinstance(track_id, str) else track_id
-    
     playback.add_to_queue(tracks, index)
+    return {"status": "success"}
+
+@app.post("/api/playback/play_next")
+def play_next(
+    track_id: str | list[str] = Body(...),
+    top: bool = Body(True)
+):
+    tracks = [track_id] if isinstance(track_id, str) else track_id
+    playback.add_to_play_next(tracks, top=top)
     return {"status": "success"}
 
 @app.post("/api/playback/remove_from_queue/{queue_item_id}")
@@ -340,16 +1033,11 @@ def remove_from_queue(queue_item_id: str):
     return {"status": "success"}
 
 @app.post("/api/playback/jump_to_queue_item/{queue_item_id}")
-def jump_to_track(queue_item_id: str):
+def jump_to_queue_item(queue_item_id: str):
     playback.jump_to_queue_item(queue_item_id)
     return {"status": "success"}
 
-@app.post("/api/playback/seek/{seconds}")
-def seek_track(seconds: float):
-    playback.seek(seconds)
-    return {"status": "success"}
-
-@app.get("/api/playback/get_queue")
+@app.get("/api/playback/queue")
 def get_queue():
     queue = QueueItem.select(QueueItem, Track, Artist).join(Track).join(Artist).order_by(QueueItem.position)
     return [
@@ -363,37 +1051,22 @@ def get_queue():
         for q in queue
     ]
 
-# Global set to keep track of active WebSocket connections
-connected_websockets = set()
-
-# Event notifier hook setup
-update_event = asyncio.Event()
-
-def on_playback_engine_state_change():
-    """Called instantly from MPV properties / track mutations."""
-    # Signal the async loop that a state event occurred immediately
-    asyncio.run_coroutine_threadsafe(trigger_immediate_broadcast(), asyncio.get_event_loop())
-
-async def trigger_immediate_broadcast():
-    update_event.set() # Wakes up streaming loops early
-
-
 @app.websocket("/ws/playback")
 async def playback_ws(websocket: WebSocket):
     await websocket.accept()
-    
-    loop = asyncio.get_event_loop()
-    
+
+    loop = asyncio.get_running_loop()
+
     def on_state_update(state):
         asyncio.run_coroutine_threadsafe(websocket.send_json(state), loop)
 
     playback.add_listener(on_state_update)
-    
+
     try:
         while True:
             data = await websocket.receive_json()
             action = data.get("action")
-            
+
             if action == "toggle_pause":
                 playback.toggle_pause()
             elif action == "skip_next":
@@ -406,11 +1079,49 @@ async def playback_ws(websocket: WebSocket):
                 playback.jump_to_queue_item(data.get("value"))
             elif action == "remove_from_queue":
                 playback.remove_from_queue(data.get("value"))
-                
+            elif action == "set_volume":
+                playback.set_volume(data.get("value", 100))
+            elif action == "clear_queue":
+                playback.clear_queue()
+            elif action == "set_repeat":
+                playback.set_repeat(int(data.get("value", 0)))
+                await websocket.send_json({"repeat_mode": playback.repeat_mode})
+            elif action == "set_shuffle":
+                playback.set_shuffle(bool(data.get("value", False)))
+                await websocket.send_json({
+                    "shuffle": playback.shuffle,
+                    "queue": playback.build_queue_state(),
+                })
+            elif action == "move_queue_item":
+                val = data.get("value") or {}
+                item_id = val.get("id")
+                position = val.get("position")
+                if item_id and position:
+                    current = playback._get_current()
+                    if current:
+                        sorted_others = list(
+                            QueueItem.select()
+                            .where(QueueItem.id != item_id)
+                            .order_by(QueueItem.position)
+                        )
+                        current_idx = next(
+                            (i for i, q in enumerate(sorted_others) if q.id == current.id), 0
+                        )
+                        if position == "next":
+                            target_idx = current_idx + 1
+                        else:
+                            target_idx = len(sorted_others)
+                        playback.reorder_queue(item_id, target_idx)
+
     except WebSocketDisconnect:
         pass
     finally:
         playback.remove_listener(on_state_update)
-        
+
+
 if __name__ == "__main__":
-    uvicorn.run("main:app", host=get_backend_host(), port=get_backend_port(), reload=True)
+    # This runs only for the PyInstaller-frozen sidecar (production). A frozen
+    # bundle has no importable "main" module on disk and no source files to
+    # watch, so pass the app object directly and never enable reload here.
+    # (Dev uses `uvicorn main:app --reload` via scripts/run-backend.cjs instead.)
+    uvicorn.run(app, host=get_backend_host(), port=get_backend_port())

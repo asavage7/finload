@@ -12,6 +12,20 @@
 	--breakpoint-7xl: 80rem; /* 1280px */
 }
 
+:root {
+	/* Player accent: the currently-playing track's album colors. Set on :root
+	   from the root layout so any element can reference the playing accent. */
+	--player-accent: #505050;
+	--player-accent-light: #ffffff;
+	--player-accent-dark: #1e1e1e;
+
+	/* Contextual accent: the album/artist/playlist (or card) currently being
+	   viewed. Defaulted here, overridden per-subtree (e.g. on a page container). */
+	--accent: #505050;
+	--accent-light: #ffffff;
+	--accent-dark: #1e1e1e;
+}
+
 html,
 body {
 	font-family: var(--font-sans);
@@ -28,3 +42,14 @@ samp {
 	font-variant-numeric: tabular-nums;
 	font-feature-settings: "tnum";
 }
+
+@keyframes slide-in-left {
+  from { transform: translateX(28px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+@keyframes slide-in-right {
+  from { transform: translateX(-28px); opacity: 0; }
+  to   { transform: translateX(0);     opacity: 1; }
+}
+.slide-in-left  { animation: slide-in-left  180ms ease-out; }
+.slide-in-right { animation: slide-in-right 180ms ease-out; }

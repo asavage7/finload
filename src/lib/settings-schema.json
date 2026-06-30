@@ -1,0 +1,258 @@
+{
+  "sections": [
+    {
+      "id": "library",
+      "label": "Library",
+      "settings": [
+        {
+          "key": "library_source",
+          "label": "Library source",
+          "description": "Where your music comes from",
+          "control": "select",
+          "options": [
+            {
+              "value": "jellyfin",
+              "label": "Jellyfin"
+            },
+            {
+              "value": "local",
+              "label": "Local files"
+            }
+          ]
+        },
+        {
+          "key": "jellyfin_url",
+          "label": "Jellyfin URL",
+          "description": "Base URL of your Jellyfin server (e.g. https://jellyfin.myserver.com or http://192.168.1.100:8096)",
+          "control": "text",
+          "placeholder": "http://192.168.1.100:8096",
+          "showIf": {
+            "key": "library_source",
+            "value": "jellyfin"
+          }
+        },
+        {
+          "key": "jellyfin_api_key",
+          "label": "Jellyfin API key",
+          "description": "API key for accessing your Jellyfin server (can be generated in the dashboard)",
+          "control": "text",
+          "placeholder": "abcdef1234567890",
+          "hidden": true,
+          "showIf": {
+            "key": "library_source",
+            "value": "jellyfin"
+          }
+        },
+        {
+          "key": "jellyfin_user_id",
+          "label": "Jellyfin User ID",
+          "description": "User ID (Can be pulled online via Dashboard > Users > Edit User > Copy ID from browser URL)",
+          "control": "text",
+          "placeholder": "abcdef1234567890",
+          "hidden": true,
+          "showIf": {
+            "key": "library_source",
+            "value": "jellyfin"
+          }
+        },
+        {
+          "key": "local_music_path",
+          "label": "Music folder",
+          "description": "Path to your local music library",
+          "control": "text",
+          "placeholder": "/home/user/Music",
+          "showIf": {
+            "key": "library_source",
+            "value": "local"
+          }
+        }
+      ]
+    },
+    {
+      "id": "playback",
+      "label": "Playback",
+      "settings": [
+        {
+          "key": "mpv_buffer_size",
+          "label": "Audio buffer size",
+          "description": "Larger buffers can reduce stuttering, but use more memory.",
+          "control": "select",
+          "options": [
+            {
+              "value": "1M",
+              "label": "1 MB (Very Low)"
+            },
+            {
+              "value": "10M",
+              "label": "10 MB (Low)"
+            },
+            {
+              "value": "25M",
+              "label": "25 MB (Default)"
+            },
+            {
+              "value": "100M",
+              "label": "100 MB (High)"
+            },
+            {
+              "value": "500M",
+              "label": "500 MB (Very High)"
+            }
+          ]
+        },
+        {
+          "key": "enable_replay_gain",
+          "label": "Normalize Audio Levels (Replay Gain)",
+          "description": "Normalize audio levels across tracks to reduce volume differences",
+          "control": "toggle"
+        },
+        {
+          "key": "replay_gain_mode",
+          "label": "Replay Gain mode",
+          "description": "Choose how to apply volume normalization",
+          "control": "select",
+          "options": [
+            {
+              "value": "auto",
+              "label": "Auto"
+            },
+            {
+              "value": "track",
+              "label": "Track"
+            },
+            {
+              "value": "album",
+              "label": "Album"
+            }
+          ],
+          "showIf": {
+            "key": "enable_replay_gain",
+            "value": true
+          }
+        },
+        {
+          "key": "enable_crossfade",
+          "label": "Crossfade",
+          "description": "Enable crossfade between tracks. Disables gapless playback.",
+          "control": "toggle"
+        },
+        {
+          "key": "crossfade_mode",
+          "label": "Crossfade mode",
+          "description": "Choose how to apply crossfading",
+          "control": "select",
+          "options": [
+            {
+              "value": "always",
+              "label": "Always"
+            },
+            {
+              "value": "non_album",
+              "label": "Non-Albums"
+            },
+            {
+              "value": "shuffle_only",
+              "label": "Shuffle Only"
+            }
+          ],
+          "showIf": {
+            "key": "enable_crossfade",
+            "value": true
+          }
+        },
+        {
+          "key": "crossfade_duration",
+          "label": "Crossfade duration",
+          "description": "Duration of the crossfade in seconds",
+          "control": "number",
+          "min": 0,
+          "max": 10,
+          "step": 0.5,
+          "showIf": {
+            "key": "enable_crossfade",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "lyrics",
+      "label": "Lyrics",
+      "settings": [
+        {
+          "key": "enable_lrclib_lyrics",
+          "label": "LRClib lyrics",
+          "description": "Fetch synced lyrics from lrclib.net when available",
+          "control": "toggle"
+        },
+        {
+          "key": "enable_synced_lyrics",
+          "label": "Synced lyrics",
+          "description": "Show synced lyrics when available (requires LRClib)",
+          "control": "toggle",
+          "showIf": {
+            "key": "enable_lrclib_lyrics",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "metadata",
+      "label": "Metadata",
+      "settings": [
+        {
+          "key": "enable_online_metadata",
+          "label": "Online metadata",
+          "description": "Fetch artist bios, images, and album descriptions from TheAudioDB",
+          "control": "toggle"
+        },
+        {
+          "key": "theaudiodb_api_key",
+          "label": "TheAudioDB API key",
+          "description": "Optional paid key for higher rate limits (leave as '123' for free personal use)",
+          "control": "text",
+          "placeholder": "123",
+          "showIf": {
+            "key": "enable_online_metadata",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "discovery",
+      "label": "Discovery",
+      "settings": [
+        {
+          "key": "enable_discovery",
+          "label": "Enable discovery",
+          "description": "Suggest new songs based on listening history",
+          "control": "toggle"
+        },
+        {
+          "key": "enable_online_discovery",
+          "label": "Online discovery",
+          "description": "Allow fetching recommendations from external sources",
+          "control": "toggle",
+          "showIf": {
+            "key": "enable_discovery",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "privacy",
+      "label": "Privacy",
+      "settings": [
+        {
+          "key": "enable_telemetry",
+          "label": "Telemetry",
+          "description": "Share anonymous usage data to help improve finload",
+          "control": "toggle"
+        }
+      ]
+    }
+  ]
+}

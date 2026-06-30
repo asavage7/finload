@@ -33,6 +33,11 @@
     ],
     "externalBin": [
       "binaries/python-backend"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libmpv2"]
+      }
+    }
   }
 }

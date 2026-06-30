@@ -1,39 +1,45 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { page } from "$app/state"; // In Svelte 5, this gives us URL parameters
+    import { page } from "$app/state";
     import ViewLayout from "$lib/components/ViewLayout.svelte";
     import MediaCard from "$lib/components/MediaCard.svelte";
     import Loading from "$lib/components/Loading.svelte";
+    import IconButton from "$lib/components/ui/IconButton.svelte";
+    import BackButton from "$lib/components/ui/BackButton.svelte";
     import {
         IconPlayerPlayFilled,
         IconArrowsShuffle,
         IconMenu2Filled,
-        IconArrowBack,
     } from "@tabler/icons-svelte";
     import { formatTime } from "$lib/utils/formatTime";
     import { apiUrl } from "$lib/backend";
+    import { getImageUrl, fetchAccentColors } from "$lib/utils/media";
+    import { blendHex } from "$lib/utils/color";
+    import { playArtist, buildCollectionMenuItems } from "$lib/utils/playback";
+    import ContextMenu from "$lib/components/ContextMenu.svelte";
 
-    // 1. Grab the dynamic [id] out of the current URL path
-    const artistId = page.params.id;
+    const artistId = page.params.id!;
 
-    // 2. Define state variables for data holding
     let artistData: any = null;
-    let duration_ms = 0;
-    let tracks: any[] = [];
-    let discs: any[] = [];
     let isLoading = true;
+    let fanartSrc = "";
+    function getFanartUrl(id: string) {
+        return apiUrl(`/api/image/${id}?type=artist&variant=fanart`);
+    }
 
     onMount(async () => {
+        const colorsPromise = fetchAccentColors("artist", artistId);
         try {
-            // 3. Fetch artist details from our Python backend
-            const res = await fetch(apiUrl(`/api/artist/${artistId}`));
-            const data = await res.json();
-            console.log("Artist data:", data), // Debug log to check artist data
-                console.log(data.artist.id);
+            const [res, tracksRes] = await Promise.all([
+                fetch(apiUrl(`/api/artist/${artistId}`)),
+                fetch(apiUrl(`/api/artist/${artistId}/tracks`)),
+            ]);
+            const [data, tracksData] = await Promise.all([res.json(), tracksRes.json()]);
 
             artistData = {
                 id: data.artist.id,
                 name: data.artist.name,
+                bio: data.artist.bio ?? null,
                 albums_count: data.artist.albums_count,
                 tracks_count: data.artist.tracks_count,
                 total_duration_ms: data.artist.total_duration_ms,
@@ -41,77 +47,70 @@
                     id: album.id,
                     title: album.title,
                     release_year: album.release_year,
-                    artist_name: data.artist.name, // Add artist name for easier access
+                    artist_name: data.artist.name,
                 })),
+                track_ids: tracksData.map((track: any) => track.id),
+                accent_colors: ["#888888", "#888888", "#18181b"],
             };
+            // Pre-load fanart; if it exists the header banner updates reactively.
+            fanartSrc = getFanartUrl(artistId);
+            isLoading = false;
 
-            // Fetch accent colors for dynamic theming (optional)
-            const colorRes = await fetch(
-                apiUrl(`/api/artist/${artistId}/accent-colors`),
-            );
-            const colors = await colorRes.json();
-            artistData.accent_colors = colors;
-            artistData = artistData;
+            // If bio has never been fetched, request enrichment in the background.
+            // The bio will appear on the next visit after enrichment completes.
+            if (artistData.bio === null) {
+                fetch(apiUrl(`/api/artist/${artistId}/enrich`), { method: "POST" }).catch(() => {});
+            }
+
+            const colors = await colorsPromise;
+            if (colors.length > 0) {
+                artistData.accent_colors = colors;
+                artistData = artistData;
+            }
         } catch (error) {
             console.error("Failed to load artist details:", error);
-        } finally {
             isLoading = false;
         }
     });
 
-    // 4. Playback handlers to communicate with Python MPV
-    // async function playAlbum() {
-    //     // Challenge logic: Tell backend to clear current queue and play this whole album list
-    //     await fetch(apiUrl(`/api/playback/play_album/${albumId}`), {
-    //         method: "POST",
-    //     });
-    // }
-
-    // async function playTrack(trackId: string) {
-    //     await fetch(
-    //         apiUrl(`/api/playback/play_album/${albumId}?track_id=${trackId}`),
-    //         { method: "POST" },
-    //     );
-    // }
+    let bgLoaded = false;
+    let fanartLoaded = false;
+    let fanartFailed = false;
+    let bioModalOpen = false;
 </script>
 
 {#if isLoading}
     <Loading />
 {:else if artistData}
-    <ViewLayout>
+    {@const blendedBg = blendHex(artistData.accent_colors[2], "#18181b", 0.1)}
+    <ViewLayout bgColor={blendedBg} accent={artistData.accent_colors}>
         <header
             slot="header"
-            class="relative w-full flex items-end p-8 bg-gradient-to-b from-zinc-800/40 to-zinc-950 pt-18"
+            class="relative w-full flex items-end p-8 pt-18 mb-8"
         >
             <img
-                src={apiUrl(`/api/image/${artistData.id}?size=400`)}
+                src={getImageUrl(artistData.id, 220)}
                 alt=""
-                class="absolute inset-0 w-full h-full object-cover blur-3xl opacity-20 scale-110 pointer-events-none"
+                class="absolute inset-0 w-full h-full object-cover blur-3xl pointer-events-none transition-opacity duration-700"
+                style="opacity: {bgLoaded ? '0.25' : '0'}"
+                on:load={() => { bgLoaded = true; }}
             />
 
-            <button
-                on:click={() => history.back()}
-                class="absolute top-4 left-4 p-2 rounded-full bg-transparent text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer transition"
-            >
-                <div class="flex items-center gap-2 px-2">
-                    <IconArrowBack size={16} />
-                    Back
-                </div>
-            </button>
+            <BackButton class="absolute top-4 left-4 z-20" />
 
             <div
                 class="relative z-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-full max-w-6xl mx-auto"
             >
                 <img
-                    src={apiUrl(`/api/image/${artistData.id}?size=400`)}
+                    src={getImageUrl(artistData.id, 220)}
                     alt={artistData.name}
-                    class="w-55 h-55 object-cover rounded-xl shadow-2xl border border-white/10 bg-zinc-900"
+                    class="w-55 h-55 object-cover rounded-xl shadow-2xl border border-white/10 bg-zinc-800"
                 />
 
                 <div class="flex-1 text-center md:text-left space-y-2">
                     <span
                         class="text-xs uppercase font-black tracking-widest"
-                        style="color: {artistData.accent_colors[1]}"
+                        style="color: var(--accent-light)"
                         >ARTIST</span
                     >
                     <h1
@@ -133,29 +132,50 @@
                             )}</span
                         >
                     </div>
+                    {#if artistData.bio}
+                        <div class="md:mr-[240px]">
+                            <p class="text-sm text-zinc-400 line-clamp-2">
+                                {artistData.bio}
+                            </p>
+                            {#if artistData.bio.length > 200}
+                                <button
+                                    on:click={() => (bioModalOpen = true)}
+                                    class="text-xs text-zinc-500 hover:text-zinc-300 mt-1 transition-colors"
+                                >
+                                    Read more
+                                </button>
+                            {/if}
+                        </div>
+                    {/if}
                 </div>
 
-                <div class="md:absolute right-0 flex items-center gap-4">
+                <div
+                    class="md:absolute right-0 flex justify-center items-center gap-4"
+                >
                     <button
-                        on:click={playAlbum}
-                        class="px-6 py-2 rounded-full text-white font-bold transition border border-white/10"
-                        style="background-color: {artistData.accent_colors[0]}"
+                        on:click={() => playArtist(artistId, false)}
+                        class="order-2 md:order-1 px-8 md:px-6 py-2 rounded-full text-white font-bold transition border border-white/10"
+                        style="background-color: var(--accent)"
                     >
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center gap-4">
                             <IconPlayerPlayFilled size={16} />
                             Play
                         </div>
                     </button>
-                    <button
-                        class="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 transition"
+                    <IconButton
+                        on:click={() => playArtist(artistId, true)}
+                        class="order-1 md:order-2"
                     >
                         <IconArrowsShuffle size={16} />
-                    </button>
-                    <button
-                        class="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 transition"
+                    </IconButton>
+                    <ContextMenu
+                        items={buildCollectionMenuItems(artistData.track_ids)}
+                        let:toggle
                     >
-                        <IconMenu2Filled size={16} />
-                    </button>
+                        <IconButton on:click={toggle} class="order-3">
+                            <IconMenu2Filled size={16} />
+                        </IconButton>
+                    </ContextMenu>
                 </div>
             </div>
         </header>
@@ -164,109 +184,52 @@
             slot="content"
             class="text-zinc-400 w-full max-w-6xl mx-auto pb-28"
         >
-            {#each discs as disc}
-                {#if showDiscLabels}
-                    <div
-                        class="flex justify-between items-center text-zinc-400 font-bold py-2 px-4 md:px-4 md:pt-4 md:pb-0 sticky top-0 border-b md:border-none border-white/10 z-10"
-                    >
-                        <div>Disc {disc.disc_number}</div>
-                        <div>
-                            <button
-                                on:click={() => history.back()}
-                                class="p-2 rounded-full text-white border border-white/10 cursor-pointer transition"
-                                style="background-color: {artistData
-                                    .accent_colors[0]}"
-                            >
-                                <IconPlayerPlayFilled size={16} />
-                            </button>
-                            <button
-                                on:click={() => history.back()}
-                                class="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer transition"
-                            >
-                                <IconArrowsShuffle size={16} />
-                            </button>
-                            <button
-                                on:click={() => history.back()}
-                                class="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer transition"
-                            >
-                                <IconMenu2Filled size={16} />
-                            </button>
-                        </div>
-                    </div>
-                {/if}
-
-                <div class="mb-8 px-0 mt-0 md:mt-4">
-                    {#each disc.tracks as track, index}
-                        <!-- svelte-ignore a11y_no_static_element_interactions -->
-                        <!-- svelte-ignore a11y_click_events_have_key_events -->
-                        <div
-                            on:click={() => playTrack(track.id)}
-                            class="flex items-center px-4 py-2.5 hover:bg-white/5 group transition duration-200 gap-4 border-b border-white/10 first:border-t cursor-pointer"
-                        >
-                            <div
-                                class="w-6 h-6 flex items-center justify-center relative"
-                            >
-                                <div
-                                    class="absolute -inset-0 flex items-center justify-center opacity-100 group-hover:opacity-0 transition-opacity duration-200 text-xs"
-                                    style="color: {artistData.accent_colors[1]}"
-                                >
-                                    {track.track_number || index + 1}
-                                </div>
-                                <IconPlayerPlayFilled
-                                    size={20}
-                                    class="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-                                    style="color: {artistData.accent_colors[1]}"
-                                />
-                            </div>
-
-                            <div
-                                class="flex flex-1 flex-col min-w-0 h-[36px] items-left justify-center"
-                            >
-                                <p class="text-white text-sm truncate">
-                                    {track.title}
-                                </p>
-                                {#if track.artist_name !== albumData.artist_name}
-                                    <p class="text-zinc-400 text-xs truncate">
-                                        {track.artist_name}
-                                    </p>
-                                {/if}
-                            </div>
-
-                            <div class="flex gap-4 justify-end items-center">
-                                <div
-                                    class="time-text text-xs right text-zinc-400 text-sm"
-                                >
-                                    {formatTime(track.duration_ms, true)}
-                                </div>
-                                <button
-                                    on:click={() => playTrack(track.id)}
-                                    class="p-2 rounded-full hover:bg-white/10 transition text-zinc-400 hover:text-white"
-                                >
-                                    <IconMenu2Filled size={16} />
-                                </button>
-                            </div>
-                        </div>
-                    {/each}
-                </div>
-            {/each}
             <h3 class="text-xl font-bold text-white mb-2 mx-4">Albums</h3>
             <div
-                class="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] xl:grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 mx-4"
+                class="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] xl:grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 mx-4"
             >
                 {#each artistData.albums as item}
                     <MediaCard
                         id={item.id}
                         title={item.title}
                         subtitle={item.release_year}
-                        imageUrl={apiUrl(
-                            `/api/image/${item.id}?size=400&type=album`,
-                        )}
+                        imageUrl={getImageUrl(item.id, 220, "album")}
                         type="album"
+                        rating={item.rating}
                     />
                 {/each}
             </div>
         </div>
     </ViewLayout>
+
+    {#if bioModalOpen}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+            class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            on:click={() => (bioModalOpen = false)}
+        >
+            <div
+                class="bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl p-6 w-full max-w-3xl mx-4 max-h-[80vh] flex flex-col"
+                on:click|stopPropagation
+            >
+                <h2 class="text-lg font-bold text-white mb-3">
+                    {artistData.name}
+                </h2>
+                <p
+                    class="text-sm text-zinc-400 leading-relaxed overflow-y-auto"
+                >
+                    {artistData.bio}
+                </p>
+                <button
+                    on:click={() => (bioModalOpen = false)}
+                    class="mt-5 self-end px-4 py-2 rounded-full text-sm font-semibold text-zinc-400 hover:text-white hover:bg-white/10 transition border border-white/10"
+                >
+                    Close
+                </button>
+            </div>
+        </div>
+    {/if}
 {:else}
-    <div class="p-8 text-red-400">Album context not found.</div>
+    <div class="p-8 text-red-400">Artist not found.</div>
 {/if}

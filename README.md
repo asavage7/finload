@@ -2,7 +2,7 @@
 
 A sleek and easy to use Jellyfin music player, with the goal to provide a more Spotify-like experience with your personal music library.
 
-**Finload is in very early development and is NOT feature-complete or ready for production use. While parts of the interface and music player do work properly, there are still major gaps in functionality. See the features and known issues section for more details.**
+**Finload is in early development and is NOT feature-complete or ready for production use. While the core music player and library work, there are still gaps in functionality. See the features and known issues sections for details.**
 
 **Only Jellyfin is supported as a music provider at the moment, however local folders and other media servers will be added in the future.**
 
@@ -11,84 +11,80 @@ A sleek and easy to use Jellyfin music player, with the goal to provide a more S
 
 ## Features
 
-- Library views for albums and artists
-- Detail page for albums and (WIP) artists
-- Playback of both albums and individual tracks
+- Sync library from Jellyfin or local files
+- Library view (grid and list)
+- Detail pages for albums and artists
+- Playback of albums, artists, playlists, and individual tracks
 - Gapless playback
-- View song queue and lyrics
+- Queue management (add, reorder, remove, clear)
+- Queue and lyrics panel
 - Fullscreen "Now Playing" page
+- Playlists (create, edit, delete)
+- Ratings for tracks and albums
 
-### To Be Implemented:
+### To Be Implemented
 
-- Playlists
-- Tracks/Playlist library views
-- Better sorting/view modes for library pages
-- Queue reordering
-- Shuffle/repeat playback modes
-- Adding tracks/albums to queue
-- Proper Jellyfin sync
-- Virtual scroll for library page (done for list view but not grid view)
-- History page in queue panel
+- Home Tab
+- History tab in queue panel
 - Search
-- Ratings system (implemented in UI but not functional)
-- Implement other media sources
+- Proper Onboarding
+- Smaller memory/disk footprint
 
-**This is not an exhaustive list!**
+**This is not an exhaustive list.**
 
-## Known issues
+### Known Issues
 
-- Clearing the whole queue is not implemented
-- MPV player state can sometimes desync from frontend
-- Hitbox for seeking is slightly higher than intended
+- Hitbox for seeking is misaligned
+- Track length incorrect for certain tracks on local files
 
 ## Prerequisites
 
-Install these outside the app itself before running Finload:
+Install these before running Finload:
 
-- Python 3.11+ for the backend tooling and local sync scripts
-- Node.js 20+ and npm 10+ for the frontend and shared dev scripts
-- Rust 1.77+ (stable toolchain) for the Tauri desktop shell
+- Python 3.11+
+- Node.js 20+ and npm 10+
+- Rust 1.77+ if using Tauri
+- libmpv (`libmpv2` on Debian/Ubuntu, `mpv` on Arch)
 
-If you are on Linux and building the desktop app, you may also need the standard system packages required by Tauri for your distribution.
+## Setup
+
+Run the setup script for your platform. This installs system dependencies, creates the Python venv, and runs `npm install`:
+
+```bash
+# Linux / macOS
+bash scripts/setup-dev.sh
+
+# Windows (PowerShell)
+.\scripts\setup-dev.ps1
+```
 
 ## Running the app
 
-1) Create a local `.env` from `.env.example` and fill in your Jellyfin credentials (do NOT commit the real `.env`):
-
-```bash
-cp .env.example .env
-# edit .env and set JELLYFIN_URL, JELLYFIN_API_KEY, JELLYFIN_USER_ID, and any other optional variables.
-```
-
-2) Install Python backend dependencies and frontend dependencies:
-
-```bash
-python -m pip install -r src-backend/requirements.txt
-npm install
-```
-
-3) Run both dev servers together (cross-platform):
+Start the frontend and backend together:
 
 ```bash
 npm run dev
-# Don't panic if the app doesn't load immediately! It takes ~30s on first launch to load.
 ```
 
-4) For the desktop shell during development:
+For the full desktop shell (Tauri):
 
 ```bash
 npm run dev:tauri
 ```
 
-Notes:
-- The backend will attempt to auto-load the repository `.env` file (project root `.env`) using `python-dotenv`. If you prefer another mechanism, set environment variables in your shell before starting `uvicorn`.
-- `INITIAL_FULL_SYNC` defaults to `false` in `.env.example` to keep startup fast and light. Set it to `true` only when you want a one-time full import.
+Jellyfin credentials (server URL, API key, user ID) are configured inside the app under Settings. Use the button on the "Now Playing" bar to access the settings page. A proper onboarding setup is under development.
+
+If you need to override backend server or data directory settings, copy `.env.example` to `.env` and adjust:
 
 ```bash
-# backend (from repo root)
-uvicorn main:app --reload --app-dir src-backend --host 127.0.0.1 --port 8000
-
-# frontend (from finload-new)
-npm run dev
+# This will be removed in a future commit
+cp .env.example .env
 ```
 
+## Building
+
+```bash
+npm run build:tauri
+
+# Completed builds can be found in <Repo Directory>/src-tauri/target/release/bundle/
+```

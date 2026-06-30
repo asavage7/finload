@@ -5,9 +5,9 @@
   "permissions": [
     "core:default",
     {
-      "identifier": "shell:allow-spawn",
+      "identifier": "shell:allow-execute",
       "allow": [
-        { "name": "binaries/python-backend", "sidecar": true }
+        { "name": "python-backend", "sidecar": true }
       ]
     }
   ]

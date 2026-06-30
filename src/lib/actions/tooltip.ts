@@ -12,7 +12,7 @@ export function tooltip(node: HTMLElement, text: string) {
     // 2. Apply styling via modern Tailwind utility classes
     tooltipEl.className = `
       fixed z-50 px-2.5 py-1.5 text-xs text-white 
-      bg-zinc-800 border border-white/5 rounded-lg shadow-xl 
+      bg-zinc-700 border border-white/5 rounded-lg shadow-xl 
       pointer-events-none opacity-0 transition-opacity duration-150 
       whitespace-nowrap tracking-wide
     `;

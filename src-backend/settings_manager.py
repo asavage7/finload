@@ -16,16 +16,21 @@ class SettingsManager:
             "accent_color": "adaptive",
             "library_source": "jellyfin",  # or "local"
             "jellyfin_url": "",
-            "jellyfin_token": "",
+            "jellyfin_api_key": "",
+            "jellyfin_user_id": "",
             "local_music_path": "",
             "enable_music_videos": False,
             "enable_lrclib_lyrics": True,
+            "enable_synced_lyrics": True,
             "enable_discovery": True,
             "enable_online_discovery": True,
-            "enable_telemetry": True,
-            "mpv_buffer_size": "150M"
+            "enable_online_metadata": True,
+            "theaudiodb_api_key": "123",
+            "enable_telemetry": False,
+            "mpv_buffer_size": "25M"
         }
         self.settings = self._load()
+        self._listeners = []
 
     def _load(self):
         """Loads settings from disk, filling missing keys with defaults."""
@@ -47,9 +52,18 @@ class SettingsManager:
         with open(self.settings_file, "w") as f:
             json.dump(data, f, indent=4)
 
+    def add_listener(self, callback):
+        """Register a callback(key, value) invoked whenever a setting changes."""
+        self._listeners.append(callback)
+
     def get(self, key):
         return self.settings.get(key, self.defaults.get(key))
 
     def set(self, key, value):
         self.settings[key] = value
         self._save(self.settings)
+        for cb in self._listeners:
+            try:
+                cb(key, value)
+            except Exception as e:
+                print(f"Settings listener error: {e}")

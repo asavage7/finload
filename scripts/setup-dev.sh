@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -e
+
+echo "=== Finload Dev Setup (Linux) ==="
+
+# ── System packages ────────────────────────────────────────────────────────────
+echo ""
+echo "→ Installing system dependencies..."
+
+if command -v apt-get &>/dev/null; then
+    sudo apt-get update -qq
+    sudo apt-get install -y \
+        libmpv-dev \
+        libwebkit2gtk-4.1-dev \
+        libgtk-3-dev \
+        libayatana-appindicator3-dev \
+        librsvg2-dev \
+        patchelf
+elif command -v dnf &>/dev/null; then
+    sudo dnf install -y \
+        mpv-devel \
+        webkit2gtk4.0-devel \
+        gtk3-devel \
+        libappindicator-gtk3-devel \
+        librsvg2-devel
+elif command -v pacman &>/dev/null; then
+    sudo pacman -S --needed \
+        mpv \
+        webkit2gtk-4.1 \
+        gtk3 \
+        libayatana-appindicator \
+        librsvg
+else
+    echo "  (Unknown package manager — install libmpv-dev and Tauri's system deps manually)"
+fi
+
+# ── Rust ───────────────────────────────────────────────────────────────────────
+if ! command -v cargo &>/dev/null; then
+    echo ""
+    echo "→ Installing Rust..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "$HOME/.cargo/env"
+fi
+
+# ── Python venv ────────────────────────────────────────────────────────────────
+echo ""
+echo "→ Setting up Python virtual environment..."
+cd "$(dirname "$0")/.."
+python3 -m venv src-backend/.venv
+src-backend/.venv/bin/pip install --upgrade pip -q
+src-backend/.venv/bin/pip install -r src-backend/requirements.txt -q
+echo "  Done."
+
+# ── Node packages ──────────────────────────────────────────────────────────────
+echo ""
+echo "→ Installing Node.js packages..."
+npm install
+
+echo ""
+echo "=== Setup complete! ==="
+echo ""
+echo "To start development:"
+echo "  npm run dev:tauri"

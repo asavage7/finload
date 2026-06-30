@@ -1,55 +1,40 @@
 <script lang="ts">
     import { IconPlayerPlayFilled } from "@tabler/icons-svelte";
     import Rating from "./Rating.svelte";
-    import { apiUrl } from "$lib/backend";
+    import CoverImage from "./CoverImage.svelte";
+    import { getItemHref } from "$lib/utils/media";
+    import { playAlbum, playTrackById } from "$lib/utils/playback";
 
     export let id: string;
-    export let album_id: string = ""; // Only for tracks
+    export let album_id: string = "";
     export let title: string;
-    export let subtitle: string = ""; // Optional (e.g., Artist name for an album)
+    export let subtitle: string = "";
     export let imageUrl: string = "";
-    export let duration: string = ""; // Optional, e.g., "3:45"
-    export let type: "artist" | "album" | "playlist" | "track" = "artist"; // Determines the link
+    export let duration: string = "";
+    export let type: "artist" | "album" | "playlist" | "track" = "artist";
+    export let rating: number = 0;
 
-    let imageFailed = false;
+    // Mount the hover play-button overlay only after first hover (cheaper rows).
+    let hovered = false;
 
-    async function playItem() {
-        if (type === "album") {
-            await fetch(apiUrl(`/api/playback/play_album/${id}`), {
-                method: "POST",
-            });
-        } else if (type === "track") {
-            await fetch(apiUrl(`/api/playback/play_track/${id}`), {
-                method: "POST",
-            });
-        }
+    function playItem() {
+        if (type === "album") playAlbum(id);
+        else if (type === "track") playTrackById(id);
     }
 </script>
 
 <a
-    href={type === "track" ? `/album/${album_id}` : `/${type}/${id}`}
-    class="group flex gap-4 p-2 pr-4 rounded-xl hover:bg-white/5 border border-white/0 hover:border-white/10 transition duration-300 cursor-pointer items-center"
+    href={getItemHref(type, id, album_id)}
+    on:mouseenter={() => (hovered = true)}
+    class="group flex gap-4 p-1.5 pr-4 rounded-xl hover:bg-white/5 transition duration-300 cursor-pointer items-center min-w-0 w-full"
 >
-    <div
-        class="relative w-12 h-12 overflow-hidden border border-white/5 bg-zinc-800 flex shrink-0 items-center justify-center {type ===
-        'artist'
-            ? 'rounded-full'
-            : 'rounded-md'}"
+    <CoverImage
+        src={imageUrl}
+        alt={title}
+        fallbackText={title}
+        class="w-12 h-12 shrink-0 {type === 'artist' ? 'rounded-full' : 'rounded-md'}"
     >
-        {#if imageUrl && !imageFailed}
-            <img
-                src={imageUrl}
-                alt={title}
-                on:error={() => (imageFailed = true)}
-                class="w-12 h-12 shrink-0object-cover shadow-md lazyload rounded-md"
-            />
-        {:else}
-            <span class="text-4xl text-zinc-600 font-bold shadow-md">
-                {title.charAt(0).toUpperCase()}
-            </span>
-        {/if}
-
-        {#if type !== "artist"}
+        {#if type !== "artist" && hovered}
             <div
                 class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center"
             >
@@ -61,7 +46,7 @@
                 </button>
             </div>
         {/if}
-    </div>
+    </CoverImage>
 
     <div class="text-left my-1 flex-grow min-w-0">
         <div class="font-bold truncate w-full text-sm text-white">
@@ -71,11 +56,10 @@
             <div class="text-xs text-zinc-400 truncate w-full">{subtitle}</div>
         {/if}
     </div>
-    <div class="flex items-center gap-1">
-        <Rating rating={3} size={12} />
+    <div class="flex items-center gap-1 shrink-0">
+        <Rating {id} itemType={type === 'track' || type === 'album' ? type : ''} {rating} size={14} />
         {#if type !== "artist"}
-            <span class="w-16 text-right text-xs text-zinc-500">{duration}</span
-            >
+            <span class="w-16 text-right text-xs text-zinc-500">{duration}</span>
         {/if}
     </div>
 </a>
