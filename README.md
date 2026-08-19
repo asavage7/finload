@@ -48,6 +48,7 @@ However, parts of Finload were created with the help of artificial intelligence.
 - Volume UI needs tweaked
 - Autoplay toggle does not persist on queue clear
 - Volume normalization does not adjust volume of non-normalized tracks, causing them to be much louder
+- WebKitGTK has different blur rendering than Firefox/Chromium, causing odd blur behaviors. 
 
 ## Install
 
