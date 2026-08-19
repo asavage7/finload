@@ -11,7 +11,7 @@ Finload is a sleek and easy to use Jellyfin music player, with the goal to provi
 
 **The UI and logo of Finload are not, and will never be, AI generated.**
 
-However, parts of Finload were created with the help of artifical intelligence. While care is taken to ensure code remains well-tested, documented, and free of infringing works, these items cannot be guaranteed.
+However, parts of Finload were created with the help of artificial intelligence. While care is taken to ensure code remains well-tested, documented, and free of infringing works, these items cannot be guaranteed.
 
 
 ## Screenshots

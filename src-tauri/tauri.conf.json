@@ -39,9 +39,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": [
-      "binaries/python-backend"
-    ],
+    "resources": {
+      "binaries/backend/": "backend/"
+    },
     "linux": {
       "deb": {
         "section": "sound",

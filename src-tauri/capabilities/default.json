@@ -4,12 +4,6 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "dialog:default",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        { "name": "python-backend", "sidecar": true }
-      ]
-    }
+    "dialog:default"
   ]
 }

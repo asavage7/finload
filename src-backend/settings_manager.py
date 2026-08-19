@@ -1,6 +1,9 @@
 import json
+import logging
 import os
 from config import get_data_dir
+
+logger = logging.getLogger(__name__)
 
 class SettingsManager:
     def __init__(self):
@@ -92,4 +95,4 @@ class SettingsManager:
                 try:
                     cb(key, value)
                 except Exception as e:
-                    print(f"Settings listener error: {e}")
+                    logger.exception("Settings listener error: %s", e)

@@ -20,7 +20,9 @@
     panelsOverlay,
     DEFAULT_ACCENT_COLORS,
     onboardingComplete,
+    backendReady,
   } from "$lib/store";
+  import StartupGate from "$lib/components/StartupGate.svelte";
   import { fade } from "svelte/transition";
   import { onDestroy, onMount } from "svelte";
   import { apiUrl, wsUrl } from "$lib/backend";
@@ -74,6 +76,46 @@
     reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
   }
 
+  // Poll /api/health until the sidecar answers. The window opens before the
+  // Python process is listening, so without this every page mounts against a
+  // dead backend, latches its error state and stays there until a manual
+  // refresh, since only the websocket ever retried.
+  const READY_TIMEOUT_MS = 60000;
+  const READY_POLL_MS = 250;
+  let readyTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function waitForBackend() {
+    if (readyTimer) {
+      clearTimeout(readyTimer);
+      readyTimer = null;
+    }
+    backendReady.set(null);
+    const deadline = Date.now() + READY_TIMEOUT_MS;
+
+    const attempt = async () => {
+      if (stopped) return;
+      try {
+        const res = await fetch(apiUrl("/api/health"));
+        if (res.ok) {
+          backendReady.set(true);
+          // Only meaningful once something can answer it; running it earlier is
+          // what made a slow start silently skip onboarding entirely.
+          checkOnboarding();
+          return;
+        }
+      } catch {
+        // Not listening yet. Falls through to another attempt below.
+      }
+      if (Date.now() >= deadline) {
+        backendReady.set(false);
+        return;
+      }
+      readyTimer = setTimeout(attempt, READY_POLL_MS);
+    };
+
+    attempt();
+  }
+
   async function checkOnboarding() {
     try {
       const res = await fetch(apiUrl("/api/settings"));
@@ -83,11 +125,9 @@
         return;
       }
     } catch {
-      // backend unavailable
+      // Settings unreadable despite a healthy backend. Fail open rather than
+      // trapping the user in a flow that needs the same backend to finish.
     }
-    // Fail open: the backend can take a while to come up, and redirecting
-    // into a flow that itself needs the backend would be worse than just
-    // showing the normal app shell.
     onboardingComplete.set(true);
   }
 
@@ -111,7 +151,7 @@
     window.addEventListener("player-command", handlePlayerCommand);
     window.addEventListener("resize", handleResize);
     connectSocket();
-    checkOnboarding();
+    waitForBackend();
     const stopMediaSession = initMediaSession();
 
     return () => {
@@ -126,6 +166,10 @@
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+    if (readyTimer) {
+      clearTimeout(readyTimer);
+      readyTimer = null;
     }
     currentFetchController?.abort();
     currentFetchController = null;
@@ -204,6 +248,10 @@
   $: footerRight = `${$rightPanelReserve}px`;
 </script>
 
+{#if $backendReady !== true}
+  <StartupGate failed={$backendReady === false} onRetry={waitForBackend} />
+{/if}
+
 <PlaylistPicker />
 <ConfirmModal />
 <PlaylistCreationModal
@@ -218,7 +266,11 @@
   <div class="flex-1 flex relative overflow-hidden">
     {#key $page.url.pathname}
       <main class="flex-1 overflow-auto" in:fade={{ duration: 100 }}>
-        <slot />
+        <!-- Held back until the backend answers, so pages mount against a
+             live backend instead of latching an unrecoverable error. -->
+        {#if $backendReady}
+          <slot />
+        {/if}
       </main>
     {/key}
 

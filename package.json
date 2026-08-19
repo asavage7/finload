@@ -1,6 +1,6 @@
 {
   "name": "finload",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Jellyfin music player with a Spotify-like experience for your personal library.",
   "type": "module",
   "homepage": "https://github.com/asavage7/finload",

@@ -16,6 +16,7 @@ import base64
 import datetime
 import hashlib
 import io
+import logging
 import os
 import re
 import threading
@@ -28,6 +29,8 @@ from PIL import Image
 from database import Track
 from .base import MediaProvider
 from .lyrics import NO_LYRICS, fetch_lrclib, parse_lrc
+
+logger = logging.getLogger(__name__)
 
 # File extensions we treat as playable audio.
 AUDIO_EXTENSIONS = {
@@ -314,7 +317,7 @@ class LocalProvider(MediaProvider):
             os.replace(tmp_path, cache_path)
             return True
         except Exception as exc:
-            print(f"Failed to write local artwork for {item_id}: {exc}")
+            logger.warning("Failed to write local artwork for %s: %s", item_id, exc)
             return False
         finally:
             if os.path.exists(tmp_path):

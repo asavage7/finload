@@ -16,6 +16,7 @@ two never collide or overwrite each other. Tracks inherit their album's
 genres rather than being enriched individually.
 """
 import json
+import logging
 import re
 import threading
 import time
@@ -26,6 +27,8 @@ import urllib.request
 from background import BackgroundJob
 from config import USER_AGENT
 from database import Album, Artist, Track
+
+logger = logging.getLogger(__name__)
 
 _REQUEST_TIMEOUT = 10
 
@@ -169,7 +172,7 @@ def _lastfm_get(api_key: str, method: str, **params) -> dict:
         with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
-        print(f"[genre] Last.fm request failed ({method}): {exc}")
+        logger.warning("Last.fm request failed (%s): %s", method, exc)
         return {}
 
 
@@ -189,7 +192,7 @@ def _mb_genres(entity_type: str, mbid: str) -> list[tuple[str, int]]:
         with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
-        print(f"[genre] MusicBrainz request failed ({entity_type}/{mbid}): {exc}")
+        logger.warning("MusicBrainz request failed (%s/%s): %s", entity_type, mbid, exc)
         return []
     return [(g["name"], int(g.get("count", 0))) for g in (data.get("genres") or []) if g.get("name")]
 

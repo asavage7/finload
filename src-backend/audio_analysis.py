@@ -25,6 +25,7 @@ from bogging down whatever else the user's machine is doing at the time:
 """
 import concurrent.futures as cf
 import json
+import logging
 import multiprocessing as mp
 import os
 import threading
@@ -34,6 +35,8 @@ import urllib.request
 from background import BackgroundJob
 from config import get_data_dir
 from database import Track, TrackFeatures, db
+
+logger = logging.getLogger(__name__)
 
 # Bumped when the feature set or extractor changes. A TrackFeatures row whose
 # feature_version differs is treated as stale and re-analyzed (see _run), and
@@ -486,7 +489,7 @@ class AudioFeatureManager(BackgroundJob):
                 try:
                     local_path = future.result()
                 except Exception as exc:
-                    print(f"[audio_analysis] Skipping {track.title}: download failed ({exc})")
+                    logger.warning("Skipping %s: download failed (%s)", track.title, exc)
                     continue
                 temp_paths[track.id] = local_path
                 yield track.id, local_path

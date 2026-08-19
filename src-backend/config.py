@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 # Single source of truth for how the app identifies itself, both to external
 # services (User-Agent) and to media servers (client name/version).
 APP_NAME = "Finload"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 USER_AGENT = f"{APP_NAME.lower()}/{APP_VERSION}"
 
 

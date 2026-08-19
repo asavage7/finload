@@ -39,13 +39,19 @@ fn main() {
     let target = env::var("TARGET").unwrap();
 
     let out_dir = Path::new("binaries");
-    let binary_name = format!("python-backend-{}", target);
+    // No target-triple suffix: that naming is an externalBin requirement, and
+    // the onedir bundle ships as a bundle resource instead (see tauri.conf.json).
+    let binary_name = "python-backend".to_string();
     let exe_ext = if target.contains("windows") {
         ".exe"
     } else {
         ""
     };
-    let target_binary_path = out_dir.join(format!("{}{}", binary_name, exe_ext));
+    // PyInstaller's COLLECT writes binaries/backend/<exe> plus _internal/ beside
+    // it; the executable is what tells us the bundle is already built.
+    let target_binary_path = out_dir
+        .join("backend")
+        .join(format!("{}{}", binary_name, exe_ext));
 
     if !out_dir.exists() {
         fs::create_dir_all(out_dir).unwrap();
@@ -113,7 +119,61 @@ fn main() {
         }
 
         let _ = fs::remove_dir_all("build");
+
+        drop_vendored_lib_symlinks(&out_dir.join("backend").join("_internal"));
     }
 
     tauri_build::build();
+}
+
+/// Delete the symlinks PyInstaller leaves at the root of `_internal/` that point
+/// into a wheel's bundled `*.libs/` directory.
+///
+/// numpy and scipy vendor their own ~25MB OpenBLAS under `numpy.libs/` and
+/// `scipy.libs/`. PyInstaller's dependency scan wants those libraries at the
+/// bundle root too, but rather than copying it links them, so its own output
+/// carries one copy of each. Tauri's resource collection then copies the tree
+/// *dereferencing* symlinks, turning each link back into a full file and adding
+/// ~49MB to every bundle.
+///
+/// The extension modules load these through an RPATH of `$ORIGIN/../../<pkg>.libs`,
+/// so the root-level entries are never the ones resolved and the links can go.
+/// Only symlinks are removed, and only those resolving into a `.libs` directory,
+/// so a real library sitting at the root is left alone.
+fn drop_vendored_lib_symlinks(internal_dir: &Path) {
+    let Ok(entries) = fs::read_dir(internal_dir) else {
+        return;
+    };
+
+    let mut freed = 0u64;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // symlink_metadata does not follow the link, which is what distinguishes
+        // a link from a real file here.
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(dest) = fs::read_link(&path) else {
+            continue;
+        };
+        if !dest
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy().ends_with(".libs"))
+        {
+            continue;
+        }
+        freed += fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let _ = fs::remove_file(&path);
+    }
+
+    if freed > 0 {
+        println!(
+            "cargo:warning=Dropped vendored-library symlinks from the backend bundle, \
+             saving ~{}MB once Tauri copies it",
+            freed / 1_048_576
+        );
+    }
 }

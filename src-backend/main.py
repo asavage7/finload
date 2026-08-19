@@ -6,9 +6,15 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-import state
-from config import get_backend_host, get_backend_port, get_cors_origins
-from routers import (
+from logging_config import setup_logging
+
+# Before importing anything that logs at import time, so nothing is emitted
+# while the root logger still has no handlers.
+setup_logging()
+
+import state  # noqa: E402
+from config import get_backend_host, get_backend_port, get_cors_origins  # noqa: E402
+from routers import (  # noqa: E402
     accent_colors,
     history,
     images,
@@ -35,6 +41,18 @@ app.add_middleware(
 for module in (library, search, images, accent_colors, playlists,
                playback, settings, sync, jobs, history, quiz):
     app.include_router(module.router)
+
+
+@app.get("/api/health")
+def health():
+    """Readiness probe the frontend polls before it renders the app shell.
+
+    Deliberately touches nothing: uvicorn only starts serving once the startup
+    event has finished, so a reply here already means the managers and the mpv
+    core are built. Anything heavier would just make readiness look later than
+    it is.
+    """
+    return {"status": "ok"}
 
 
 def _exit_when_orphaned():

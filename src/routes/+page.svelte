@@ -280,7 +280,7 @@
         variant="error"
         icon={IconPlugConnectedX}
         title="Couldn't load your home page."
-        message="Backend unavailable. Start the backend dev server and refresh."
+        message="Lost contact with the player service. It may still be starting, or it stopped unexpectedly."
       />
     </div>
   </ViewLayout>
