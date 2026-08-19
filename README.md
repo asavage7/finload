@@ -42,8 +42,6 @@ However, parts of Finload were created with the help of artificial intelligence.
 
 ### Known Issues
 
-**- When launching the app, the backend falsely appears to be down. Please wait a second, right click, and select "Refresh". If the backend still appears to be down, please report an issue.**
-
 - Switching between Jellyfin and Local files requires a restart to clear database issues
 - Discovery algorithm needs tweaked, especially for isolated genres
 - Library tabs sometimes need to be scrolled for content to appear
