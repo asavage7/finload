@@ -126,20 +126,31 @@ fn main() {
     tauri_build::build();
 }
 
-/// Delete the symlinks PyInstaller leaves at the root of `_internal/` that point
-/// into a wheel's bundled `*.libs/` directory.
+/// Directories whose contents resolve without help from the bundle root.
 ///
-/// numpy and scipy vendor their own ~25MB OpenBLAS under `numpy.libs/` and
-/// `scipy.libs/`. PyInstaller's dependency scan wants those libraries at the
-/// bundle root too, but rather than copying it links them, so its own output
-/// carries one copy of each. Tauri's resource collection then copies the tree
-/// *dereferencing* symlinks, turning each link back into a full file and adding
-/// ~49MB to every bundle.
+/// Everything numpy and scipy vendor is reachable by RPATH: their extension
+/// modules carry `$ORIGIN/../../<pkg>.libs`, and the libraries in there (OpenBLAS
+/// depending on libgfortran, say) carry `$ORIGIN`. So the root-level entries for
+/// those are redundant.
 ///
-/// The extension modules load these through an RPATH of `$ORIGIN/../../<pkg>.libs`,
-/// so the root-level entries are never the ones resolved and the links can go.
-/// Only symlinks are removed, and only those resolving into a `.libs` directory,
-/// so a real library sitting at the root is left alone.
+/// `pillow.libs` is deliberately not in this list. Its members have *no* RPATH at
+/// all -- `libtiff` NEEDs `libzstd` and can only find it through the loader's
+/// default search path, which under PyInstaller means the bundle root. Removing
+/// its root symlinks breaks Pillow's TIFF/WebP support at runtime and makes
+/// linuxdeploy's dependency walk fail outright when building an AppImage.
+const SELF_RESOLVING_LIB_DIRS: [&str; 2] = ["numpy.libs", "scipy.libs"];
+
+/// Delete the redundant symlinks PyInstaller leaves at the root of `_internal/`.
+///
+/// numpy and scipy vendor their own ~25MB OpenBLAS. PyInstaller's dependency scan
+/// wants those libraries at the bundle root too, but links rather than copies
+/// them, so its own output carries one copy of each. Tauri's resource collection
+/// then copies the tree *dereferencing* symlinks, turning each link back into a
+/// full file and adding ~49MB to every bundle.
+///
+/// Only symlinks are removed, and only those resolving into a directory listed in
+/// `SELF_RESOLVING_LIB_DIRS`, so a real library at the root, or a link something
+/// actually depends on finding there, is left alone.
 fn drop_vendored_lib_symlinks(internal_dir: &Path) {
     let Ok(entries) = fs::read_dir(internal_dir) else {
         return;
@@ -161,7 +172,7 @@ fn drop_vendored_lib_symlinks(internal_dir: &Path) {
         };
         if !dest
             .components()
-            .any(|c| c.as_os_str().to_string_lossy().ends_with(".libs"))
+            .any(|c| SELF_RESOLVING_LIB_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref()))
         {
             continue;
         }

@@ -21,7 +21,7 @@
     "build:tauri:deb": "FINLOAD_TRIM_MPV=1 tauri build --bundles deb",
     "build:tauri:rpm": "FINLOAD_TRIM_MPV=1 tauri build --bundles rpm",
     "build:tauri:linux-installers": "FINLOAD_TRIM_MPV=1 tauri build --bundles deb,rpm",
-    "build:tauri:appimage": "tauri build --bundles appimage",
+    "build:tauri:appimage": "bash scripts/build-appimage.sh",
     "build:linux": "npm run build:tauri:linux-installers && npm run build:tauri:appimage",
     "version:set": "node scripts/set-version.mjs",
     "build": "vite build",
