@@ -5,6 +5,7 @@ shapes, auth header, stream-URL scheme) is contained here.
 """
 import datetime
 import json
+import logging
 import os
 import threading
 import urllib.error
@@ -17,6 +18,8 @@ from config import APP_NAME, APP_VERSION, USER_AGENT
 from database import Track
 from .base import MediaProvider
 from .lyrics import NO_LYRICS, fetch_lrclib
+
+logger = logging.getLogger(__name__)
 
 # Default timeout (seconds)
 REQUEST_TIMEOUT = 15
@@ -114,7 +117,7 @@ class JellyfinProvider(MediaProvider):
                 self.access_token = data.get("AccessToken", "")
                 self.user_id = data.get("User", {}).get("Id", "")
             except Exception as e:
-                print(f"Jellyfin authentication failed: {e}")
+                logger.error("Jellyfin authentication failed: %s", e)
 
     def is_configured(self) -> bool:
         return bool(self.server_url and self.access_token and self.user_id)
@@ -157,7 +160,7 @@ class JellyfinProvider(MediaProvider):
         try:
             self._post_no_body(f"/Users/{self.user_id}/PlayedItems/{track_id}")
         except Exception as e:
-            print(f"Failed to report play to Jellyfin: {e}")
+            logger.warning("Failed to report play to Jellyfin: %s", e)
 
     def _parse_jellyfin_date(self, raw: Optional[str]) -> Optional[datetime.datetime]:
         """Jellyfin's DateCreated is the item's real "added to library" time
@@ -324,7 +327,7 @@ class JellyfinProvider(MediaProvider):
                     os.replace(tmp_path, cache_path)
                     return True
         except Exception as e:
-            print(f"Error downloading image {item_id} (Size: {size_px}px): {e}")
+            logger.warning("Error downloading image %s (size %spx): %s", item_id, size_px, e)
         finally:
             if os.path.exists(tmp_path):
                 try:
@@ -433,5 +436,5 @@ class JellyfinProvider(MediaProvider):
             with urllib.request.urlopen(req, timeout=5) as response:
                 return response.status in (200, 204)
         except Exception as e:
-            print(f"Failed to upload lyrics to Jellyfin: {e}")
+            logger.warning("Failed to upload lyrics to Jellyfin: %s", e)
             return False

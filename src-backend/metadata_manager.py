@@ -10,6 +10,7 @@ TheAudioDB free key: "123" (personal use). Configurable via settings.
 import datetime
 import io
 import json
+import logging
 import threading
 import urllib.parse
 import urllib.request
@@ -21,6 +22,8 @@ from background import BackgroundJob
 from config import USER_AGENT
 from database import Artist
 from providers.base import cached_image_path
+
+logger = logging.getLogger(__name__)
 
 _REQUEST_TIMEOUT = 10
 
@@ -97,7 +100,7 @@ class MetadataManager(BackgroundJob):
             with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
-            print(f"[metadata] TheAudioDB request failed ({path}): {exc}")
+            logger.warning("TheAudioDB request failed (%s): %s", path, exc)
             return None
 
     def _download_image(self, url: str, dest_path: str, max_width: int = 0) -> bool:
@@ -114,7 +117,7 @@ class MetadataManager(BackgroundJob):
                 img.save(dest_path, "JPEG", quality=88)
             return True
         except Exception as exc:
-            print(f"[metadata] Image download failed ({url}): {exc}")
+            logger.warning("Image download failed (%s): %s", url, exc)
             return False
 
     # ------------------------------------------------------------------

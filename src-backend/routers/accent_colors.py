@@ -6,6 +6,7 @@ used as the base background.
 """
 import colorsys
 import hashlib
+import logging
 import os
 
 from fastapi import APIRouter
@@ -13,6 +14,8 @@ from PIL import Image
 
 from database import PlaylistTrack, Track
 from routers.images import playlist_image_path, resolve_image_path
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -159,7 +162,7 @@ def get_accent_colors(item_id: str, type: str = "album", image_path: str | None 
         return result
 
     except Exception as e:
-        print(f"Color extraction skipped: {e}")
+        logger.warning("Color extraction skipped: %s", e)
         return {"error": str(e)}
 
 

@@ -3,12 +3,10 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
-use tauri_plugin_shell::process::CommandChild;
-use tauri_plugin_shell::ShellExt;
 
-// Holds the Python sidecar so it can be killed on exit. Option so it can be
-// taken out and consumed by CommandChild::kill() exactly once.
-struct BackendProcess(Mutex<Option<CommandChild>>);
+// Holds the Python backend process so it can be killed on exit. Option so it is
+// taken and killed exactly once.
+struct BackendProcess(Mutex<Option<std::process::Child>>);
 
 // Holds the OS media-session handle (MPRIS/SMTC/Now Playing). None if souvlaki
 // failed to initialize (e.g. no D-Bus session) — commands become no-ops rather
@@ -109,18 +107,39 @@ fn update_playback_status(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Run through X11 (XWayland on a Wayland session) rather than natively.
+    //
+    // GTK3 never implements the xdg-decoration protocol, so a native Wayland
+    // window always wears GTK's own client-side titlebar and the compositor is
+    // never offered the chance to decorate it. Under X11 the window manager
+    // draws its own, which is both the platform-native look and reliable;
+    // the native path also proved inconsistent in practice. XWayland keeps the
+    // DMA-BUF renderer working, so this costs none of the GPU acceleration that
+    // disabling that renderer would, only XWayland's overhead and Wayland
+    // niceties like per-monitor fractional scaling.
+    //
+    // Set only when unset, so `GDK_BACKEND=wayland finload` still forces the
+    // native path for anyone who wants it.
     #[cfg(target_os = "linux")]
-    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    if std::env::var_os("GDK_BACKEND").is_none() {
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
 
+    // Caps the web process rather than letting WebKit's default heuristics grow
+    // toward available RAM. Browsing the library streams hundreds of cover
+    // images, so the cache genuinely does grow, but the earlier limits (512MB,
+    // trimming from 256MB) sat below what a large library needs on screen at
+    // once and left it purging and re-decoding images continuously. These are
+    // high enough to hold a normal browsing session and still stop a runaway.
     #[cfg(target_os = "linux")]
     {
         use webkit2gtk::{MemoryPressureSettings, WebsiteDataManager};
         if gtk::init().is_ok() {
             let mut settings = MemoryPressureSettings::new();
-            settings.set_memory_limit(512); // MB soft cap for the web process
-            settings.set_conservative_threshold(0.5); // begin trimming caches at 50%
-            settings.set_strict_threshold(0.75); // aggressive GC + cache purge at 75%
-            settings.set_poll_interval(2.0); // seconds between memory checks
+            settings.set_memory_limit(2048); // MB soft cap for the web process
+            settings.set_conservative_threshold(0.7); // begin trimming caches at 70%
+            settings.set_strict_threshold(0.9); // aggressive GC + cache purge at 90%
+            settings.set_poll_interval(4.0); // seconds between memory checks
             WebsiteDataManager::set_memory_pressure_settings(&mut settings);
         }
     }
@@ -141,45 +160,54 @@ pub fn run() {
     }));
 
     builder
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             update_now_playing_metadata,
             update_playback_status,
         ])
         .setup(|app| {
-            let sidecar = app
-                .shell()
-                .sidecar("python-backend")
-                .expect("failed to create python-backend sidecar command");
+            // The backend is a PyInstaller onedir bundle shipped as a resource,
+            // not a Tauri sidecar: the executable resolves its _internal/ tree
+            // relative to itself, so the whole directory travels together and is
+            // launched in place.
+            let backend_exe = app
+                .path()
+                .resource_dir()
+                .expect("failed to resolve the resource directory")
+                .join("backend")
+                .join(if cfg!(target_os = "windows") {
+                    "python-backend.exe"
+                } else {
+                    "python-backend"
+                });
 
-            let (rx, child) = sidecar
+            // Inherited rather than piped: the backend writes its own rotating
+            // log file (see src-backend/logging_config.py), so there is no need
+            // to drain a pipe to keep it from blocking on a full buffer, and a
+            // terminal-launched dev run still shows its output directly.
+            let child = std::process::Command::new(&backend_exe)
                 .spawn()
-                .expect("failed to spawn python-backend sidecar");
+                .unwrap_or_else(|e| panic!("failed to spawn the backend at {backend_exe:?}: {e}"));
 
             // Keep the child alive for the duration of the app; killed on exit.
             app.manage(BackendProcess(Mutex::new(Some(child))));
-
-            // Drain stdout/stderr so the sidecar never blocks on a full pipe buffer.
-            tauri::async_runtime::spawn(async move {
-                let mut rx = rx;
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
-                            print!("[backend] {}", String::from_utf8_lossy(&line));
-                        }
-                        tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
-                            eprint!("[backend] {}", String::from_utf8_lossy(&line));
-                        }
-                        _ => {}
-                    }
-                }
-            });
 
             // Hide the window until the backend is accepting connections, then
             // show it. This prevents the "backend unavailable" flash on every launch.
             let window = app.get_webview_window("main").expect("no main window");
             window.hide().ok();
+
+            // bundle.icon in tauri.conf.json only feeds the packaged .desktop entry
+            // and the hicolor theme, which is what the taskbar and alt-tab resolve.
+            // The titlebar draws the window's own icon property, which nothing sets,
+            // so it fell back to a generic one. Embedded rather than read from disk
+            // so it works the same from a deb, an AppImage or a dev build.
+            match tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png")) {
+                Ok(icon) => {
+                    let _ = window.set_icon(icon);
+                }
+                Err(e) => eprintln!("[icon] failed to decode the window icon: {e:?}"),
+            }
 
             // OS media-session integration (MPRIS on Linux, SMTC on Windows,
             // Now Playing on macOS). hwnd is only meaningful on Windows, where
@@ -228,18 +256,19 @@ pub fn run() {
                 }
             }
 
-            // Bound the WebKitGTK resource/image cache. Browsing the library streams
-            // hundreds of cover images, and WebKit's default cache model grows its
-            // in-memory cache toward a large soft cap (RSS climbs to 500MB+).
-            // DocumentViewer minimizes that cache; image bytes are already disk-cached
-            // by the Python backend, so re-fetches are cheap.
+            // DocumentViewer is WebKit's minimal cache model, meant for a viewer
+            // that shows one document and never returns to it. It keeps RSS down
+            // but makes every revisit re-fetch and re-decode, which is the wrong
+            // trade for a library the user scrolls back and forth through.
+            // WebBrowser keeps a normal cache; the memory-pressure settings above
+            // are what bound it now.
             #[cfg(target_os = "linux")]
             {
                 use webkit2gtk::{CacheModel, WebContextExt, WebViewExt};
                 let _ = window.with_webview(|webview| {
                     let wv = webview.inner();
                     if let Some(ctx) = wv.web_context() {
-                        ctx.set_cache_model(CacheModel::DocumentViewer);
+                        ctx.set_cache_model(CacheModel::WebBrowser);
                     }
                 });
             }
@@ -268,8 +297,11 @@ pub fn run() {
             // lingers as an orphaned uvicorn process.
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<BackendProcess>() {
-                    if let Some(child) = state.0.lock().unwrap().take() {
+                    if let Some(mut child) = state.0.lock().unwrap().take() {
                         let _ = child.kill();
+                        // Reaped so it can't linger as a zombie if the app is
+                        // still running its own shutdown work.
+                        let _ = child.wait();
                     }
                 }
                 if let Some(state) = app_handle.try_state::<MediaControlsState>() {

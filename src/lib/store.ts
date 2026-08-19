@@ -66,6 +66,14 @@ export const playerState = writable<PlayerState>({
 // Drives the +layout.svelte redirect guard to /onboarding.
 export const onboardingComplete = writable<boolean | null>(null);
 
+// Whether the backend has answered /api/health yet. null = still waiting, which
+// is the normal state for the first seconds of a cold start: the packaged app
+// launches the Python sidecar alongside the window, so the UI is up well before
+// anything can serve it. +layout.svelte holds the app shell back until this is
+// true, so pages never mount against a backend that isn't listening and latch
+// an error they have no way to retry out of.
+export const backendReady = writable<boolean | null>(null);
+
 export const queuePanelActive = writable(false);
 
 // Reserved width (px) of the right queue panel. Mirrors its `w-80` class and is

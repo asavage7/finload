@@ -392,7 +392,7 @@
       await loadChunk(tab, 0, Math.max(chunkSize, 100) - 1);
     } catch (error) {
       loadError =
-        "Backend unavailable. Start the backend dev server and refresh.";
+        "Lost contact with the player service. It may still be starting, or it stopped unexpectedly.";
       console.error(`Failed to load ${tab.toLowerCase()}:`, error);
     } finally {
       isLoading = false;
