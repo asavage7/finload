@@ -1,13 +1,18 @@
-<img src="docs/app.png" alt="Finload logo, an outline of a shark fin with a waveform in the background." width="64">
-
-# Finload
+<img src="docs/banner.png" alt="Finload logo, an outline of a shark fin with a waveform in the background." height="80">
 
 [![CI](https://github.com/asavage7/finload/actions/workflows/ci.yml/badge.svg)](https://github.com/asavage7/finload/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-A sleek and easy to use Jellyfin music player, with the goal to provide a more Spotify-like experience with your personal music library.
+Finload is a sleek and easy to use Jellyfin music player, with the goal to provide a more Spotify-like experience with your personal music library.
 
 **Finload is nearing a beta-ready state with most major features working as intended.**
+
+## AI Usage
+
+**The UI and logo of Finload are not, and will never be, AI generated.**
+
+However, parts of Finload were created with the help of artifical intelligence. While care is taken to ensure code remains well-tested, documented, and free of infringing works, these items cannot be guaranteed.
+
 
 ## Screenshots
 
@@ -45,11 +50,6 @@ A sleek and easy to use Jellyfin music player, with the goal to provide a more S
 - Volume UI needs tweaked
 - Autoplay toggle does not persist on queue clear
 - Volume normalization does not adjust volume of non-normalized tracks, causing them to be much louder
-
-
-### AI Usage
-
-Parts of the code for this app were generated using artifical intelligence. While care is taken to ensure code remains well-tested, documented, and free of infringing works, these items cannot be guaranteed. All logos and UI design work are human-designed. If any text or features within the app appear to be AI generated, please open an issue and it will be resolved. This serves as a transparent notice, especially for those cautious of AI generated code.
 
 ## Install
 
