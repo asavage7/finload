@@ -31,31 +31,33 @@ const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
 pkg.version = version;
 writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
 
+// Each of these is checked with .test() before substituting, rather than by
+// comparing the result against the original: re-stamping the version a file
+// already carries is a no-op, and treating "content did not change" as "pattern
+// not found" would fail every release built from a tag matching the committed
+// version.
+function replaceIn(path, pattern, label) {
+  const text = readFileSync(path, 'utf8');
+  if (!pattern.test(text)) {
+    console.error(`Could not find ${label} in ${path}`);
+    process.exit(1);
+  }
+  writeFileSync(path, text.replace(pattern, `$1${version}$2`));
+}
+
 // Anchored to the [package] table's own `version` key so it can't match the
 // version of a dependency further down the file.
-const cargoPath = join(root, 'src-tauri', 'Cargo.toml');
-const cargo = readFileSync(cargoPath, 'utf8');
-const patched = cargo.replace(
+replaceIn(
+  join(root, 'src-tauri', 'Cargo.toml'),
   /(\[package\][^[]*?\nversion\s*=\s*")[^"]*(")/,
-  `$1${version}$2`,
+  'the [package] version key',
 );
-if (patched === cargo) {
-  console.error('Could not find the [package] version key in src-tauri/Cargo.toml');
-  process.exit(1);
-}
-writeFileSync(cargoPath, patched);
 
-const configPath = join(root, 'src-backend', 'config.py');
-const config = readFileSync(configPath, 'utf8');
-const configPatched = config.replace(
+replaceIn(
+  join(root, 'src-backend', 'config.py'),
   /(^APP_VERSION\s*=\s*")[^"]*(")/m,
-  `$1${version}$2`,
+  'APP_VERSION',
 );
-if (configPatched === config) {
-  console.error('Could not find APP_VERSION in src-backend/config.py');
-  process.exit(1);
-}
-writeFileSync(configPath, configPatched);
 
 console.log(
   `Version set to ${version} in package.json, src-tauri/Cargo.toml and src-backend/config.py`,
