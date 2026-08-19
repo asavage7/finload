@@ -17,6 +17,10 @@ export function apiUrl(path: string) {
   return joinPath(backendUrl, path);
 }
 
+export function absoluteApiUrl(path: string) {
+  return joinPath(normalizeBackendUrl(explicitBackendUrl || defaultBackendUrl), path);
+}
+
 export function wsUrl(path: string) {
   if (import.meta.env.DEV) {
     const protocol =

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { createEventDispatcher } from "svelte";
-    import CoverImage from "$lib/components/CoverImage.svelte";
+    import MediaRow from "$lib/components/MediaRow.svelte";
     import { getImageUrl } from "$lib/utils/media";
     import type { SearchResult } from "$lib/utils/search";
 
@@ -51,6 +51,16 @@
         : query.trim()
           ? `No results for "${query.trim()}"`
           : "";
+
+    // MediaRow renders a real <a href>, so plain clicks are handled here
+    // (closing the popup, clearing the query) while modified clicks
+    // (ctrl/cmd/middle) are left alone to open in a new tab natively.
+    function onRowClick(e: MouseEvent, result: SearchResult) {
+        if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey)
+            return;
+        e.preventDefault();
+        dispatch("select", result);
+    }
 </script>
 
 <svelte:window
@@ -67,26 +77,23 @@
         class="z-[2000] flex flex-col overflow-y-auto bg-zinc-800/75 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl p-1.5"
     >
         {#each results as result, i}
-            <button
-                type="button"
-                on:click={() => dispatch("select", result)}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+                on:click={(e) => onRowClick(e, result)}
                 on:mousemove={() => dispatch("hover", i)}
-                class="flex gap-4 items-center p-1.5 pr-3 rounded-lg text-left transition {i ===
-                activeIndex
-                    ? 'bg-white/10'
-                    : 'hover:bg-white/5'}"
+                class="rounded-xl transition {i === activeIndex ? 'bg-white/10' : ''}"
             >
-                <CoverImage
-                    src={getImageUrl(result.image_id, 220, result.type === "artist" ? "artist" : undefined)}
-                    alt={result.title}
-                    fallbackText={result.title}
-                    class="w-12 h-12 shrink-0 {result.type === 'artist' ? 'rounded-full' : 'rounded-md'}"
+                <MediaRow
+                    id={result.id}
+                    album_id={result.album_id ?? ""}
+                    title={result.title}
+                    subtitle={result.subtitle}
+                    imageUrl={getImageUrl(result.image_id, 240, result.type === "artist" ? "artist" : undefined)}
+                    type={result.type}
+                    compact
                 />
-                <div class="flex flex-col min-w-0 flex-1">
-                    <span class="font-bold text-sm text-white truncate">{result.title}</span>
-                    <span class="text-xs text-zinc-400 truncate">{result.subtitle}</span>
-                </div>
-            </button>
+            </div>
         {:else}
             {#if emptyMessage}
                 <div class="px-3 py-4 text-sm text-zinc-400 text-center">{emptyMessage}</div>

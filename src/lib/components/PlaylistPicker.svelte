@@ -62,6 +62,7 @@
                 <h2 class="text-base font-bold text-white">Add to Playlist</h2>
                 <button
                     on:click={close}
+                    aria-label="Close"
                     class="p-1 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 transition"
                 >
                     <IconX size={18} />

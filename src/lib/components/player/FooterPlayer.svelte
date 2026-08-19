@@ -173,11 +173,14 @@
     .accent_colors[1]}25, {$playerState
     .accent_colors[0]}20); background-color: {$playerState.accent_colors[2]};"
 >
-  <img
-    src={getImageUrl($playerState.current_track?.album_id || "default", 220)}
-    alt=""
-    class="absolute left-0 w-1/3 h-full object-cover blur-3xl opacity-25 scale-110 pointer-events-none"
-  />
+  <div class="absolute left-0 w-1/3 h-full opacity-25 scale-110 pointer-events-none">
+    <CoverImage
+      src={getImageUrl($playerState.current_track?.album_id || "default", 240)}
+      alt=""
+      showPlaceholder={false}
+      class="w-full h-full blur-3xl"
+    />
+  </div>
   <div class="flex items-center gap-3 w-1/3">
     <svelte:element
       this={$playerState.current_track ? 'a' : 'div'}
@@ -195,7 +198,7 @@
           />
         </div>
         <CoverImage
-          src={getImageUrl($playerState.current_track.album_id || "default", 220)}
+          src={getImageUrl($playerState.current_track.album_id || "default", 240)}
           alt="Current Track"
           fallbackText={$playerState.current_track.album_name}
           class="w-18 h-18 rounded-xl shadow-md"
@@ -243,13 +246,18 @@
     class="absolute left-1/2 -translate-x-1/2 flex flex-col justify-center items-center gap-2 w-9/16"
   >
     <div class="flex items-center gap-4 mt-1">
-      <IconButton active={$playerState.shuffle} on:click={toggleShuffle}><IconArrowsShuffle size={16} /></IconButton>
-      <IconButton white on:click={skipPrev}
+      <IconButton
+        active={$playerState.shuffle}
+        on:click={toggleShuffle}
+        aria-pressed={$playerState.shuffle}
+        aria-label="Shuffle"><IconArrowsShuffle size={16} /></IconButton>
+      <IconButton white on:click={skipPrev} aria-label="Previous track"
         ><IconPlayerTrackPrevFilled size={16} /></IconButton
       >
       <button
         on:click={togglePause}
-        class="p-2 rounded-full transition-all duration-250 border border-white/10 shadow-md hover:brightness-110 hover:shadow-lg"
+        aria-label={$playerState.is_paused ? "Play" : "Pause"}
+        class="p-2 rounded-full transition-all duration-250 border border-white/10 shadow-sm hover:brightness-110 hover:shadow-lg hover:cursor-pointer"
         style="background-color: var(--player-accent);"
       >
         {#if $playerState.is_paused}
@@ -258,10 +266,18 @@
           <IconPlayerPauseFilled size={20} />
         {/if}
       </button>
-      <IconButton white on:click={skipNext}
+      <IconButton white on:click={skipNext} aria-label="Next track"
         ><IconPlayerTrackNextFilled size={16} /></IconButton
       >
-      <IconButton active={$playerState.repeat_mode > 0} on:click={cycleRepeat}>
+      <IconButton
+        active={$playerState.repeat_mode > 0}
+        on:click={cycleRepeat}
+        aria-label={$playerState.repeat_mode === 2
+          ? "Repeat one"
+          : $playerState.repeat_mode === 1
+            ? "Repeat all"
+            : "Repeat off"}
+      >
         {#if $playerState.repeat_mode === 2}
           <IconRepeatOnce size={16} />
         {:else}
@@ -287,7 +303,12 @@
   </div>
 
   <div class="flex items-center gap-2 justify-end w-7/32 pr-4">
-    <IconButton white bind:el={volumeButtonEl} on:click={toggleVolume}>
+    <IconButton
+      white
+      bind:el={volumeButtonEl}
+      on:click={toggleVolume}
+      aria-label="Volume"
+    >
       {#if volume === 0}
         <IconVolumeOff size={16} />
       {:else if volume < 50}
@@ -325,17 +346,15 @@
       </div>
     {/if}
 
-    <IconButton white active={$queuePanelActive} on:click={() => toggleQueuePanel()}
-      ><IconPlaylistFilled size={16} /></IconButton
+    <IconButton
+      white
+      active={$queuePanelActive}
+      on:click={() => toggleQueuePanel()}
+      aria-pressed={$queuePanelActive}
+      aria-label="Queue"><IconPlaylistFilled size={16} /></IconButton
     >
     <ContextMenu items={moreMenuItems} let:toggle>
-      <IconButton white on:click={toggle}><IconMenu2 size={16} /></IconButton>
+      <IconButton white on:click={toggle} aria-label="More options"><IconMenu2 size={16} /></IconButton>
     </ContextMenu>
-    <a
-      href="/settings"
-      class="p-2 rounded-full hover:bg-white/10 transition text-zinc-400 hover:text-white"
-    >
-      <IconSettings size={16} />
-    </a>
   </div>
 </div>

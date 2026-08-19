@@ -17,19 +17,22 @@ if command -v apt-get &>/dev/null; then
         librsvg2-dev \
         patchelf
 elif command -v dnf &>/dev/null; then
+    # Tauri v2 builds against webkit2gtk 4.1, not the 4.0 that Tauri v1 used.
     sudo dnf install -y \
         mpv-devel \
-        webkit2gtk4.0-devel \
+        webkit2gtk4.1-devel \
         gtk3-devel \
         libappindicator-gtk3-devel \
-        librsvg2-devel
+        librsvg2-devel \
+        patchelf
 elif command -v pacman &>/dev/null; then
     sudo pacman -S --needed \
         mpv \
         webkit2gtk-4.1 \
         gtk3 \
         libayatana-appindicator \
-        librsvg
+        librsvg \
+        patchelf
 else
     echo "  (Unknown package manager — install libmpv-dev and Tauri's system deps manually)"
 fi

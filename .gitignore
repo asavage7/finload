@@ -15,5 +15,10 @@ src-backend/**/*.pyc
 src-backend/**/*.pyo
 src-tauri/target/
 src-tauri/binaries/
+# PyInstaller's working directory. build.rs removes it after a successful run,
+# so it only survives a failed build.
+src-tauri/build/
+src-backend/build/
+src-backend/dist/
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*

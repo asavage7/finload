@@ -3,11 +3,12 @@
     import { apiUrl } from "$lib/backend";
     import { playlistCoverTimestamps } from "$lib/store";
     import { IconPlaylistFilled } from "@tabler/icons-svelte";
+    import CoverImage from "$lib/components/CoverImage.svelte";
 
     export let playlistId: string = "";
     export let name: string = "";
     export let albumIds: string[] = [];
-    export let size: number = 220;
+    export let size: number = 240;
 
     let mainFailed = false;
     let fetchedIds: string[] = [];
@@ -45,34 +46,37 @@
 <div
     class="w-full h-full overflow-hidden flex items-center justify-center bg-zinc-800"
 >
-    {#if !mainFailed}
-        <img
-            {src}
-            alt={name}
-            class="w-full h-full object-cover"
-            on:error={() => (mainFailed = true)}
-        />
-    {:else if grid.length}
-        <div class="grid grid-cols-2 w-full h-full">
-            {#each grid as albumId}
-                <img
-                    src={getImageUrl(albumId, size)}
-                    alt=""
-                    class="w-full h-full object-cover"
-                />
-            {/each}
-        </div>
-    {:else}
-        <div
-            class="flex items-center justify-center w-full h-full text-zinc-600"
-        >
-        {#if name}
-            <span class="font-semibold" style="font-size: {letterSize}px;"
-                >{name[0]?.toUpperCase() ?? ""}</span
-            >
-        {:else}
-            <IconPlaylistFilled size={letterSize * 1.5} />
+    <CoverImage
+        {src}
+        alt={name}
+        bind:failed={mainFailed}
+        showPlaceholder={false}
+        class="w-full h-full"
+    >
+        {#if mainFailed}
+            {#if grid.length}
+                <div class="grid grid-cols-2 absolute inset-0">
+                    {#each grid as albumId}
+                        <img
+                            src={getImageUrl(albumId, size)}
+                            alt=""
+                            class="w-full h-full object-cover"
+                        />
+                    {/each}
+                </div>
+            {:else}
+                <div
+                    class="flex items-center justify-center w-full h-full text-zinc-600"
+                >
+                {#if name}
+                    <span class="font-semibold" style="font-size: {letterSize}px;"
+                        >{name[0]?.toUpperCase() ?? ""}</span
+                    >
+                {:else}
+                    <IconPlaylistFilled size={letterSize * 1.5} />
+                {/if}
+                </div>
+            {/if}
         {/if}
-        </div>
-    {/if}
+    </CoverImage>
 </div>

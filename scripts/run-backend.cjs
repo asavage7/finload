@@ -22,6 +22,7 @@ if (!fs.existsSync(venvPython)) {
 const proc = spawn(venvPython, [
     '-m', 'uvicorn', 'main:app',
     '--reload',
+    '--reload-dir', path.join(root, 'src-backend'),
     '--app-dir', path.join(root, 'src-backend'),
     '--host', '0.0.0.0',
     '--port', '8000',

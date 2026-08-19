@@ -1,7 +1,13 @@
-import { apiUrl } from '$lib/backend';
+import { apiUrl, absoluteApiUrl } from '$lib/backend';
 
 export function getImageUrl(id: string | number, size: number, type?: string): string {
     return apiUrl(`/api/image/${id}?size=${size}${type ? `&type=${type}` : ''}`);
+}
+
+// Same as getImageUrl, but always fully-qualified. Use this for URLs handed to
+// native OS code (e.g. OS media-session artwork) instead of <img> tags.
+export function getAbsoluteImageUrl(id: string | number, size: number, type?: string): string {
+    return absoluteApiUrl(`/api/image/${id}?size=${size}${type ? `&type=${type}` : ''}`);
 }
 
 export function getItemHref(
@@ -16,7 +22,7 @@ export function getItemHref(
 }
 
 export async function fetchAccentColors(
-    type: 'album' | 'artist' | 'playlist',
+    type: 'album' | 'artist' | 'playlist' | 'track' | 'genre',
     id: string | number
 ): Promise<string[]> {
     try {

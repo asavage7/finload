@@ -13,13 +13,12 @@ tracks, the absolute file path) so they stay stable across rescans. The
 on disk, so playback and artwork work after app restarts without a re-scan.
 """
 import base64
+import datetime
 import hashlib
 import io
-import json
 import os
 import re
-import urllib.parse
-import urllib.request
+import threading
 from typing import Iterator, List, Optional, Set
 
 import mutagen
@@ -28,6 +27,7 @@ from PIL import Image
 
 from database import Track
 from .base import MediaProvider
+from .lyrics import NO_LYRICS, fetch_lrclib, parse_lrc
 
 # File extensions we treat as playable audio.
 AUDIO_EXTENSIONS = {
@@ -39,8 +39,6 @@ AUDIO_EXTENSIONS = {
 # in priority order, when a file has no embedded artwork.
 COVER_BASENAMES = ("cover", "folder", "front", "album", "albumart", "thumb")
 COVER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
-
-REQUEST_TIMEOUT = 5
 
 
 def _stable_hash(*parts: str) -> str:
@@ -58,6 +56,11 @@ def _first(value, default: str = "") -> str:
     return str(value).strip() or default
 
 
+def _split_combined_genre(value: str) -> list[str]:
+    """Some taggers store multiple genres in one field joined by ';'"""
+    return [p.strip() for p in value.split(";") if p.strip()]
+
+
 def _parse_int(value: str) -> int:
     """Parse leading digits from tag values like '3', '03/12' or 'Disc 1'."""
     match = re.search(r"\d+", value or "")
@@ -67,6 +70,13 @@ def _parse_int(value: str) -> int:
 def _parse_year(value: str) -> int:
     match = re.search(r"\d{4}", value or "")
     return int(match.group()) if match else 0
+
+
+def _file_mtime(path: str) -> Optional[datetime.datetime]:
+    try:
+        return datetime.datetime.fromtimestamp(os.stat(path).st_mtime)
+    except OSError:
+        return None
 
 
 class LocalProvider(MediaProvider):
@@ -108,18 +118,20 @@ class LocalProvider(MediaProvider):
 
         tags = easy.tags or {}
         info = getattr(easy, "info", None)
-        directory = os.path.dirname(path)
         filename = os.path.splitext(os.path.basename(path))[0]
 
         title = _first(tags.get("title"), filename)
         track_artist_name = _first(tags.get("artist"), "Unknown Artist")
         album_artist_name = _first(tags.get("albumartist"), track_artist_name)
         album_title = _first(tags.get("album"), "Unknown Album")
-        genres = tags.get("genre")
-        if isinstance(genres, (list, tuple)) and genres:
-            genre = ", ".join(str(g).strip() for g in genres if str(g).strip()) or "Unknown"
+        genres_raw = tags.get("genre")
+        if isinstance(genres_raw, (list, tuple)):
+            genres_list = []
+            for g in genres_raw:
+                genres_list.extend(_split_combined_genre(str(g)))
         else:
-            genre = _first(genres, "Unknown")
+            single = _first(genres_raw, "")
+            genres_list = _split_combined_genre(single) if single else []
 
         track_number = _parse_int(_first(tags.get("tracknumber")))
         disc_number = _parse_int(_first(tags.get("discnumber"))) or 1
@@ -131,20 +143,18 @@ class LocalProvider(MediaProvider):
         album_artist_id = _stable_hash(album_artist_name.lower())
         track_artist_id = _stable_hash(track_artist_name.lower())
 
-        has_artwork = self._has_artwork(path, directory)
-
         return {
             "artists": [
-                {"id": album_artist_id, "name": album_artist_name, "provider": "local"},
-                {"id": track_artist_id, "name": track_artist_name, "provider": "local"},
+                {"id": album_artist_id, "name": album_artist_name, "provider": "local", "mbid": None},
+                {"id": track_artist_id, "name": track_artist_name, "provider": "local", "mbid": None},
             ],
             "album_data": {
                 "id": album_id,
                 "title": album_title,
                 "artist": album_artist_id,
                 "release_year": release_year,
-                "genre": genre,
                 "provider": "local",
+                "mbid": None,  # no fingerprinting yet — local files aren't MusicBrainz-matched
             },
             "track_data": {
                 "id": track_id,
@@ -154,10 +164,16 @@ class LocalProvider(MediaProvider):
                 "track_number": track_number,
                 "disc_number": disc_number,
                 "duration_ms": duration_ms,
-                "has_artwork": has_artwork,
                 "file_path": path,
                 "provider": "local",
+                "mbid": None,
+                # File mtime as a proxy "added to library" time — no better
+                # signal exists for local files (no server to ask). Omitted
+                # entirely rather than set to None on a failed stat, so the
+                # DB layer's own "now" fallback applies instead.
+                **({"added_at": added_at} if (added_at := _file_mtime(path)) else {}),
             },
+            "genres": genres_list,
         }
 
     # -- sync ---------------------------------------------------------------
@@ -176,8 +192,7 @@ class LocalProvider(MediaProvider):
         for track_id in item_ids:
             item = self._scan_cache.get(track_id)
             if item is None:
-                # Not in the most recent scan (shouldn't normally happen, since
-                # Not in scan cache; re-parse from the DB-stored path.
+                # Not in the scan cache; re-parse from the DB-stored path.
                 path = self._resolve_track_path(track_id)
                 if path and os.path.exists(path):
                     item = self._parse_file(path)
@@ -209,17 +224,6 @@ class LocalProvider(MediaProvider):
                 if actual:
                     return os.path.join(directory, actual)
         return None
-
-    def _has_artwork(self, path: str, directory: str) -> bool:
-        if self._find_cover_file(directory):
-            return True
-        # No folder cover — check for an embedded picture. This needs a full
-        # (non-easy) parse, since EasyID3 doesn't expose APIC frames.
-        try:
-            audio = mutagen.File(path)
-        except Exception:
-            return False
-        return self._extract_embedded_art(audio) is not None
 
     def _extract_embedded_art(self, audio) -> Optional[bytes]:
         """Pull embedded cover bytes from a parsed mutagen file, across formats."""
@@ -299,17 +303,25 @@ class LocalProvider(MediaProvider):
             return False
 
         cache_path = self.get_cached_image_path(item_id, size_px)
+        tmp_path = f"{cache_path}.{os.getpid()}-{threading.get_ident()}.tmp"
         try:
             with Image.open(io.BytesIO(data)) as img:
                 img = img.convert("RGB")
                 if size_px > 0 and img.width > size_px:
                     height = round(img.height * (size_px / img.width))
                     img = img.resize((size_px, max(1, height)), Image.LANCZOS)
-                img.save(cache_path, "JPEG", quality=88)
+                img.save(tmp_path, "JPEG", quality=88)
+            os.replace(tmp_path, cache_path)
             return True
         except Exception as exc:
             print(f"Failed to write local artwork for {item_id}: {exc}")
             return False
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     # -- lyrics -------------------------------------------------------------
     def get_lyrics(self, track_id: str, lrclib_enabled: bool = True,
@@ -322,7 +334,7 @@ class LocalProvider(MediaProvider):
             if os.path.exists(lrc_path):
                 try:
                     with open(lrc_path, "r", encoding="utf-8", errors="ignore") as fh:
-                        result = self._parse_lrc(fh.read(), synced_enabled)
+                        result = parse_lrc(fh.read(), synced_enabled)
                     if result["type"] != "none":
                         return result
                 except OSError:
@@ -331,33 +343,17 @@ class LocalProvider(MediaProvider):
         # 2. Embedded lyrics tag (unsynced).
         embedded = self._embedded_lyrics(path) if path else None
 
-        # 3. lrclib.net lookup, mirroring the Jellyfin provider.
+        # 3. lrclib.net lookup.
         if lrclib_enabled:
-            result = self._fetch_lrclib(track_id, synced_enabled)
-            if result["type"] != "none":
-                return result
+            track = Track.get_or_none(Track.id == track_id)
+            if track:
+                result, _raw = fetch_lrclib(track, synced_enabled)
+                if result["type"] != "none":
+                    return result
 
         if embedded:
             return {"type": "unsynced", "text": embedded}
-        return {"type": "none"}
-
-    def _parse_lrc(self, text: str, synced_enabled: bool) -> dict:
-        lines = []
-        plain = []
-        for raw in text.splitlines():
-            matches = re.findall(r"\[(\d+):(\d+(?:\.\d+)?)\]", raw)
-            content = re.sub(r"\[[^\]]*\]", "", raw).strip()
-            if matches and content:
-                for mins, secs in matches:
-                    lines.append({"time_ms": int(mins) * 60000 + float(secs) * 1000, "text": content})
-            if content:
-                plain.append(content)
-        if lines and synced_enabled:
-            lines.sort(key=lambda entry: entry["time_ms"])
-            return {"type": "synced", "lines": lines}
-        if plain:
-            return {"type": "unsynced", "text": "\n".join(plain)}
-        return {"type": "none"}
+        return dict(NO_LYRICS)
 
     def _embedded_lyrics(self, path: str) -> Optional[str]:
         try:
@@ -376,29 +372,3 @@ class LocalProvider(MediaProvider):
         except Exception:
             pass
         return None
-
-    def _fetch_lrclib(self, track_id: str, synced_enabled: bool) -> dict:
-        try:
-            track = Track.get_by_id(track_id)
-            query = urllib.parse.urlencode({
-                "track_name": track.title,
-                "artist_name": track.artist.name,
-                "album_name": track.album.title,
-                "duration": int(track.duration_ms) / 1000,
-            })
-            req = urllib.request.Request(
-                f"https://lrclib.net/api/get?{query}",
-                headers={"User-Agent": "finload/1.0"},
-            )
-            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
-                data = json.loads(response.read().decode())
-
-            if data.get("syncedLyrics") and synced_enabled:
-                result = self._parse_lrc(data["syncedLyrics"], synced_enabled)
-                if result["type"] == "synced":
-                    return result
-            if data.get("plainLyrics"):
-                return {"type": "unsynced", "text": data["plainLyrics"]}
-        except Exception:
-            pass
-        return {"type": "none"}

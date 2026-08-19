@@ -5,8 +5,9 @@
   export let alt: string = '';
   export let fallbackText: string = '';
   export let style: string = '';
+  export let showPlaceholder = true;
 
-  let failed = false;
+  export let failed = false;
   let loaded = false;
   let _prevSrc = '';
   // Reset when the image source changes (e.g. track or album changed).
@@ -23,7 +24,7 @@
   class="relative overflow-hidden border border-white/5 bg-zinc-700 flex items-center justify-center {className}"
   style="container-type: size; {style}"
 >
-  {#if !loaded || failed || !src}
+  {#if (!loaded || failed || !src) && showPlaceholder}
     <span
       class="font-semibold text-zinc-600 select-none pointer-events-none text-base"
       style="font-size: max(1rem, 15cqmin);"

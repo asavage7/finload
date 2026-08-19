@@ -1,0 +1,138 @@
+"""Pure-Python stand-in for the subset of ``numba`` that librosa imports.
+
+Registered as ``sys.modules["numba"]`` before librosa is first imported (see
+audio_analysis._ensure_librosa), this lets librosa's DSP run with **no numba /
+llvmlite installed** — dropping ~200 MB of native LLVM from the PyInstaller
+bundle. librosa's ``@jit``/``@guvectorize``/``@vectorize`` bodies are ordinary
+Python that numba would otherwise JIT-compile; run as plain Python they produce
+bit-for-bit identical results (validated across the local library, both mp3 and
+m4a, plus silent/short/stereo/resampled edge cases).
+
+Two librosa functions can't run verbatim as Python and are overridden by the
+caller instead:
+  * ``util.localmax``/``localmin`` — backed by ``@stencil`` (relative-index
+    semantics that only exist under numba); replaced with numpy equivalents.
+  * ``beat.__beat_track_dp`` — its loop does ``range(np.round(float))``, which
+    numba coerces to int but Python rejects; replaced with an int()-cast copy.
+
+The build excludes the real numba/llvmlite (see src-tauri/build.rs). librosa is
+pinned < 1.0 so its internals — and therefore this shim's assumptions — stay
+fixed; revisit on any librosa upgrade.
+"""
+import re
+
+import numpy as np
+
+_TYPEMAP = {
+    "bool_": np.bool_, "int16": np.int16, "int32": np.int32,
+    "int64": np.int64, "float32": np.float32, "float64": np.float64,
+}
+
+
+def _passthrough(*dargs, **dkwargs):
+    """Emulate @jit / @njit used bare (@jit) or called (@jit(...))."""
+    if len(dargs) == 1 and callable(dargs[0]) and not dkwargs:
+        return dargs[0]
+    return lambda fn: fn
+
+
+jit = njit = generated_jit = _passthrough
+
+
+def vectorize(*dargs, **dkwargs):
+    """librosa's @vectorize bodies (e.g. _cabs2) use numpy-broadcastable
+    arithmetic, so the body applies to whole arrays unchanged."""
+    def deco(fn):
+        def wrapper(*args, **kwargs):
+            return fn(*args, **kwargs)
+        wrapper.__wrapped__ = fn
+        return wrapper
+    if len(dargs) == 1 and callable(dargs[0]) and not dkwargs:
+        return deco(dargs[0])
+    return deco
+
+
+def _dims(part):
+    return re.findall(r"\(([^)]*)\)", part)
+
+
+def guvectorize(signatures, layout, **kwargs):
+    """Emulate numba's generalized-ufunc convention for the single-call (no
+    batch) case librosa uses: parse the layout, allocate output arrays (dtype
+    from the first signature string), run the plain-Python body, return the
+    output(s). Handles both call styles librosa uses — outputs returned, or an
+    output array passed explicitly as a trailing arg."""
+    in_part, out_part = layout.split("->")
+    in_dims, out_dims = _dims(in_part), _dims(out_part)
+    n_in, n_out = len(in_dims), len(out_dims)
+    types = re.findall(r"(bool_|int16|int32|int64|float32|float64)", signatures[0])
+    out_types = types[n_in:n_in + n_out]
+
+    def deco(fn):
+        def caller(*args):
+            args = list(args)
+            if len(args) == n_in:
+                letter_size = {}
+                for dimstr, a in zip(in_dims, args):
+                    if dimstr:
+                        arr = np.asarray(a)
+                        for off, L in enumerate(reversed([c.strip() for c in dimstr.split(",")])):
+                            letter_size[L] = arr.shape[-1 - off]
+                outs = []
+                for od, ot in zip(out_dims, out_types):
+                    dt = _TYPEMAP[ot]
+                    if od == "":
+                        outs.append(np.zeros(1, dtype=dt))  # scalar core -> len-1
+                    else:
+                        shape = tuple(letter_size[c.strip()] for c in od.split(","))
+                        outs.append(np.zeros(shape, dtype=dt))
+                fn(*args, *outs)
+                results = [o[0] if od == "" else o for o, od in zip(outs, out_dims)]
+                return results[0] if len(results) == 1 else tuple(results)
+            # Trailing n_out args are outputs, passed explicitly.
+            inputs, outputs = args[:n_in], args[n_in:]
+            fixed = []
+            for out, od in zip(outputs, out_dims):
+                if od == "" and np.ndim(out) == 0:
+                    fixed.append((out, np.zeros(1, dtype=out.dtype)))
+                else:
+                    fixed.append((out, out))
+            fn(*inputs, *[f[1] for f in fixed])
+            for orig, tmp in fixed:
+                if orig is not tmp:
+                    orig[()] = tmp[0]
+            return None
+        caller.__wrapped__ = fn
+        return caller
+    return deco
+
+
+def stencil(*dargs, **dkwargs):
+    """Stencils can't run as plain Python (relative indexing). librosa uses them
+    only inside localmax/localmin, which the caller replaces with numpy versions,
+    so this returns a body that raises if ever actually invoked."""
+    def deco(fn):
+        def _stub(*a, **k):
+            raise RuntimeError(
+                f"numba stencil {fn.__name__} called under _numba_shim "
+                "(expected to be overridden — see audio_analysis)"
+            )
+        return _stub
+    if len(dargs) == 1 and callable(dargs[0]) and not dkwargs:
+        return deco(dargs[0])
+    return deco
+
+
+# Attributes librosa may reference at import time.
+prange = range
+float32, float64 = np.float32, np.float64
+int16, int32, int64 = np.int16, np.int32, np.int64
+bool_ = np.bool_
+
+
+class _Config:
+    def __getattr__(self, name):
+        return None
+
+
+config = _Config()

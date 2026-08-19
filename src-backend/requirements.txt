@@ -8,3 +8,5 @@ mutagen>=1.45.0
 python-dotenv>=1.0.0
 pyinstaller>=5.0.0
 python-multipart>=0.0.5
+librosa>=0.10.0,<0.12  # pinned: _numba_shim overrides internal librosa.beat/util functions
+soundfile>=0.12.0

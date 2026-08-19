@@ -1,8 +1,11 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount, createEventDispatcher } from "svelte";
     import { IconCheck } from "@tabler/icons-svelte";
 
+    const dispatch = createEventDispatcher<{ openchange: boolean }>();
+
     let open = false;
+    $: dispatch("openchange", open);
     let triggerRect: DOMRect | null = null;
     let menuEl: HTMLDivElement | null = null;
 

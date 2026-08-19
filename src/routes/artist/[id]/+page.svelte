@@ -2,30 +2,33 @@
     import { onMount } from "svelte";
     import { page } from "$app/state";
     import ViewLayout from "$lib/components/ViewLayout.svelte";
+    import DetailHeader from "$lib/components/DetailHeader.svelte";
+    import GenreChips from "$lib/components/GenreChips.svelte";
+    import Carousel from "$lib/components/Carousel.svelte";
     import MediaCard from "$lib/components/MediaCard.svelte";
     import Loading from "$lib/components/Loading.svelte";
-    import IconButton from "$lib/components/ui/IconButton.svelte";
+    import EmptyState from "$lib/components/EmptyState.svelte";
+    import CoverImage from "$lib/components/CoverImage.svelte";
     import BackButton from "$lib/components/ui/BackButton.svelte";
     import {
-        IconPlayerPlayFilled,
-        IconArrowsShuffle,
-        IconMenu2Filled,
+        IconMicrophoneFilled,
+        IconPlugConnectedX,
     } from "@tabler/icons-svelte";
     import { formatTime } from "$lib/utils/formatTime";
     import { apiUrl } from "$lib/backend";
     import { getImageUrl, fetchAccentColors } from "$lib/utils/media";
     import { blendHex } from "$lib/utils/color";
     import { playArtist, buildCollectionMenuItems } from "$lib/utils/playback";
-    import ContextMenu from "$lib/components/ContextMenu.svelte";
 
     const artistId = page.params.id!;
 
     let artistData: any = null;
+    let appearsOn: any[] = [];
+    let similarArtists: any[] = [];
     let isLoading = true;
-    let fanartSrc = "";
-    function getFanartUrl(id: string) {
-        return apiUrl(`/api/image/${id}?type=artist&variant=fanart`);
-    }
+    let bioModalOpen = false;
+    let notFound = false;
+    let loadFailed = false;
 
     onMount(async () => {
         const colorsPromise = fetchAccentColors("artist", artistId);
@@ -34,7 +37,20 @@
                 fetch(apiUrl(`/api/artist/${artistId}`)),
                 fetch(apiUrl(`/api/artist/${artistId}/tracks`)),
             ]);
-            const [data, tracksData] = await Promise.all([res.json(), tracksRes.json()]);
+            if (res.status === 404) {
+                notFound = true;
+                isLoading = false;
+                return;
+            }
+            if (!res.ok || !tracksRes.ok) {
+                loadFailed = true;
+                isLoading = false;
+                return;
+            }
+            const [data, tracksData] = await Promise.all([
+                res.json(),
+                tracksRes.json(),
+            ]);
 
             artistData = {
                 id: data.artist.id,
@@ -47,19 +63,23 @@
                     id: album.id,
                     title: album.title,
                     release_year: album.release_year,
+                    rating: album.rating,
                     artist_name: data.artist.name,
                 })),
                 track_ids: tracksData.map((track: any) => track.id),
+                genres: data.artist.genres ?? [],
                 accent_colors: ["#888888", "#888888", "#18181b"],
             };
-            // Pre-load fanart; if it exists the header banner updates reactively.
-            fanartSrc = getFanartUrl(artistId);
+            appearsOn = data.appears_on ?? [];
+            similarArtists = data.similar_artists ?? [];
             isLoading = false;
 
-            // If bio has never been fetched, request enrichment in the background.
-            // The bio will appear on the next visit after enrichment completes.
-            if (artistData.bio === null) {
-                fetch(apiUrl(`/api/artist/${artistId}/enrich`), { method: "POST" }).catch(() => {});
+            // No bio means the artist was never enriched; kick that off in the
+            // background so it's there on the next visit.
+            if (!artistData.bio) {
+                fetch(apiUrl(`/api/artist/${artistId}/enrich`), {
+                    method: "POST",
+                }).catch(() => {});
             }
 
             const colors = await colorsPromise;
@@ -69,55 +89,35 @@
             }
         } catch (error) {
             console.error("Failed to load artist details:", error);
+            loadFailed = true;
             isLoading = false;
         }
     });
-
-    let bgLoaded = false;
-    let fanartLoaded = false;
-    let fanartFailed = false;
-    let bioModalOpen = false;
 </script>
 
 {#if isLoading}
     <Loading />
 {:else if artistData}
-    {@const blendedBg = blendHex(artistData.accent_colors[2], "#161616", 0.2)}
+    {@const blendedBg = blendHex(artistData.accent_colors[2], "#18181B", 0.15)}
     <ViewLayout bgColor={blendedBg} accent={artistData.accent_colors}>
-        <header
-            slot="header"
-            class="relative w-full flex items-end p-8 pt-18 mb-8"
-        >
-            <img
-                src={getImageUrl(artistData.id, 220)}
-                alt=""
-                class="absolute inset-0 w-full h-full object-cover blur-3xl pointer-events-none transition-opacity duration-700"
-                style="opacity: {bgLoaded ? '0.25' : '0'}"
-                on:load={() => { bgLoaded = true; }}
-            />
-
-            <BackButton class="absolute top-4 left-4 z-20" />
-
-            <div
-                class="relative z-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-full max-w-6xl mx-auto"
+        <svelte:fragment slot="header">
+            <DetailHeader
+                typeLabel="ARTIST"
+                title={artistData.name}
+                bgSrc={getImageUrl(artistData.id, 240)}
+                onPlay={() => playArtist(artistId, false)}
+                onShuffle={() => playArtist(artistId, true)}
+                menuItems={buildCollectionMenuItems(artistData.track_ids, { id: artistId, type: 'artist' })}
+                primaryAction="shuffle"
             >
-                <img
-                    src={getImageUrl(artistData.id, 220)}
+                <CoverImage
+                    slot="cover"
+                    src={getImageUrl(artistData.id, 240)}
                     alt={artistData.name}
-                    class="w-55 h-55 object-cover rounded-xl shadow-2xl border border-white/10 bg-zinc-800"
+                    fallbackText={artistData.name}
+                    class="w-full max-w-[40vh] aspect-square md:w-55 md:h-55 mx-auto rounded-xl shadow-2xl border border-white/10 bg-zinc-800"
                 />
-
-                <div class="flex-1 text-center md:text-left space-y-2">
-                    <span
-                        class="text-xs uppercase font-black tracking-widest"
-                        style="color: var(--accent-light)"
-                        >ARTIST</span
-                    >
-                    <h1
-                        class="text-2xl md:text-5xl font-black text-white line-clamp-2 mb-0 pb-1"
-                    >
-                        {artistData.name}
-                    </h1>
+                <svelte:fragment slot="meta">
                     <div
                         class="flex flex-wrap items-center justify-center md:justify-start gap-2 text-sm text-zinc-400 font-medium"
                     >
@@ -132,72 +132,67 @@
                             )}</span
                         >
                     </div>
+                    <div>
+                        <GenreChips genres={artistData.genres} />
+                    </div>
+
                     {#if artistData.bio}
-                        <div class="md:mr-[240px]">
+                        <div>
                             <p class="text-sm text-zinc-400 line-clamp-2">
                                 {artistData.bio}
                             </p>
                             {#if artistData.bio.length > 200}
                                 <button
                                     on:click={() => (bioModalOpen = true)}
-                                    class="text-xs text-zinc-500 hover:text-zinc-300 mt-1 transition-colors"
+                                    class="text-xs text-zinc-400 hover:text-white hover:underline hover:cursor-pointer mt-1 transition-colors"
                                 >
                                     Read more
                                 </button>
                             {/if}
                         </div>
                     {/if}
-                </div>
+                </svelte:fragment>
+            </DetailHeader>
+        </svelte:fragment>
 
-                <div
-                    class="md:absolute right-0 flex justify-center items-center gap-4"
-                >
-                    <button
-                        on:click={() => playArtist(artistId, false)}
-                        class="order-2 md:order-1 px-8 md:px-6 py-2 rounded-full text-white font-bold transition border border-white/10"
-                        style="background-color: var(--accent)"
-                    >
-                        <div class="flex items-center gap-4">
-                            <IconPlayerPlayFilled size={16} />
-                            Play
-                        </div>
-                    </button>
-                    <IconButton
-                        on:click={() => playArtist(artistId, true)}
-                        class="order-1 md:order-2"
-                    >
-                        <IconArrowsShuffle size={16} />
-                    </IconButton>
-                    <ContextMenu
-                        items={buildCollectionMenuItems(artistData.track_ids)}
-                        let:toggle
-                    >
-                        <IconButton on:click={toggle} class="order-3">
-                            <IconMenu2Filled size={16} />
-                        </IconButton>
-                    </ContextMenu>
-                </div>
-            </div>
-        </header>
-
-        <div
-            slot="content"
-            class="text-zinc-400 w-full max-w-6xl mx-auto pb-28"
-        >
-            <h3 class="text-xl font-bold text-white mb-2 mx-4">Albums</h3>
+        <!-- Horizontal container mirrors DetailHeader (outer md:px-8 + inner
+             max-w-8xl mx-auto px-4 md:px-6) so header and content stay aligned
+             at every width, including the 8xl band. -->
+        <div slot="content" class="w-full md:px-8 pt-4 pb-28">
             <div
-                class="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] xl:grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 mx-4"
+                class="text-zinc-400 w-full max-w-[var(--8xl)] mx-auto px-4 md:px-6 flex flex-col gap-8"
             >
-                {#each artistData.albums as item}
-                    <MediaCard
-                        id={item.id}
-                        title={item.title}
-                        subtitle={item.release_year}
-                        imageUrl={getImageUrl(item.id, 220, "album")}
-                        type="album"
-                        rating={item.rating}
-                    />
-                {/each}
+            <Carousel title="Albums" items={artistData.albums} layout="row" let:item>
+                <MediaCard
+                    id={item.id}
+                    title={item.title}
+                    subtitle={item.release_year}
+                    imageUrl={getImageUrl(item.id, 240, "album")}
+                    type="album"
+                    rating={item.rating}
+                />
+            </Carousel>
+
+            <Carousel title="Appears On" items={appearsOn} layout="row" let:item>
+                <MediaCard
+                    id={item.id}
+                    title={item.title}
+                    subtitle={item.artist_name}
+                    subtitleHref={item.artist_id ? `/artist/${item.artist_id}` : ""}
+                    imageUrl={getImageUrl(item.id, 240, "album")}
+                    type="album"
+                    rating={item.rating}
+                />
+            </Carousel>
+
+            <Carousel title="Similar Artists" items={similarArtists} layout="row" let:item>
+                <MediaCard
+                    id={item.id}
+                    title={item.name}
+                    imageUrl={getImageUrl(item.id, 240, "artist")}
+                    type="artist"
+                />
+            </Carousel>
             </div>
         </div>
     </ViewLayout>
@@ -230,6 +225,28 @@
             </div>
         </div>
     {/if}
+{:else if notFound}
+    <ViewLayout>
+        <div slot="content" class="relative w-full h-full">
+            <BackButton class="absolute top-4 left-4 z-20" />
+            <EmptyState
+                variant="not-found"
+                icon={IconMicrophoneFilled}
+                title="Artist not found."
+                message="It may have been deleted or the link is incorrect."
+            />
+        </div>
+    </ViewLayout>
 {:else}
-    <div class="p-8 text-red-400">Artist not found.</div>
+    <ViewLayout>
+        <div slot="content" class="relative w-full h-full">
+            <BackButton class="absolute top-4 left-4 z-20" />
+            <EmptyState
+                variant="error"
+                icon={IconPlugConnectedX}
+                title="Couldn't load this artist."
+                message="Backend unavailable. Start the backend dev server and refresh."
+            />
+        </div>
+    </ViewLayout>
 {/if}

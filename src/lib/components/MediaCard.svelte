@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { fade } from "svelte/transition";
   import { IconPlayerPlayFilled, IconMenu2Filled } from "@tabler/icons-svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import IconButton from "$lib/components/ui/IconButton.svelte";
@@ -19,58 +21,78 @@
   export let rating: number | undefined = undefined;
 
   let accentColors: string[] = ["rgba(255,255,255,0.1)", "#4654ad", "#000000"];
-  let accentColorLoaded = false;
-  let accentColorLoading = false;
-
   let hovered = false;
+  let menuOpen = false;
+  $: showOverlay = hovered || menuOpen;
 
-  function onEnter() {
-    getAccentColor();
-    hovered = true;
-  }
+  onMount(async () => {
+    if (type !== "artist") await getAccentColor();
+  });
 
   async function getAccentColor() {
-    if ((type !== "album" && type !== "playlist") || accentColorLoaded || accentColorLoading) return;
-    accentColorLoading = true;
     const colors = await fetchAccentColors(type, id);
     if (colors.length > 0) {
       accentColors = colors;
-      accentColorLoaded = true;
     }
-    accentColorLoading = false;
   }
 </script>
 
+<!-- Hover overlay shared by the playlist and album covers below. -->
+{#snippet hoverOverlay()}
+  <div
+    transition:fade={{ duration: 100 }}
+    class="absolute inset-0 bg-black/50 flex items-center justify-center"
+  >
+    <button
+      on:click|preventDefault|stopPropagation={() => playItem(id, type)}
+      class="p-3 text-white rounded-full flex items-center justify-center shadow-md border border-white/10 cursor-pointer backdrop-blur-xl transition-all"
+      style="background-color: {accentColors[0]}; border-color: {accentColors[1]}33;"
+    >
+      <IconPlayerPlayFilled size={24} />
+    </button>
+    <div
+      class="absolute bottom-2 w-full pointer-events-auto flex items-center justify-between px-2"
+    >
+      {#if type === "album"}
+        <Rating
+          {id}
+          itemType="album"
+          {rating}
+          size={16}
+          rated_color={accentColors[1]}
+        />
+      {/if}
+      <ContextMenu
+        items={buildItemMenuItems(id, type)}
+        on:openchange={(e) => (menuOpen = e.detail)}
+        let:toggle
+      >
+        <IconButton
+          white
+          on:click={(e) => toggle(e)}
+          aria-label="More options"
+          class="ml-auto items-center bg-black/25 border-white/10"
+        >
+          <IconMenu2Filled size={16} />
+        </IconButton>
+      </ContextMenu>
+    </div>
+  </div>
+{/snippet}
+
 <a
   href={getItemHref(type, id)}
-  on:mouseenter|preventDefault|stopPropagation={onEnter}
+  on:mouseenter|preventDefault|stopPropagation={() => (hovered = true)}
+  on:mouseleave|preventDefault|stopPropagation={() => (hovered = false)}
   class="group flex flex-col gap-2 rounded-xl transition duration-300 cursor-pointer hover:bg-white/5 p-2"
 >
   {#if type === "playlist"}
-    <div class="relative w-full aspect-square overflow-hidden border border-white/5 bg-zinc-700 rounded-lg flex items-center justify-center">
+    <div
+      class="relative w-full aspect-square overflow-hidden border border-white/5 bg-zinc-700 rounded-lg flex items-center justify-center"
+    >
       <PlaylistCover playlistId={id} name={title} albumIds={coverAlbumIds} />
-      {#if hovered}
-      <div
-        class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex items-center justify-center"
-      >
-        <button
-          on:click|preventDefault|stopPropagation={() => playItem(id, type)}
-          class="p-3 text-white rounded-full flex items-center justify-center shadow-md border border-white/10 cursor-pointer backdrop-blur-xl transition-all"
-          style="background-color: {accentColors[0]}; border-color: {accentColors[1]}33;"
-        >
-          <IconPlayerPlayFilled size={24} />
-        </button>
-        <div class="absolute bottom-2 w-full pointer-events-auto flex items-center justify-between px-2">
-          <ContextMenu items={buildItemMenuItems(id, type)} let:toggle>
-            <IconButton
-              on:click={(e) => toggle(e)}
-              class="text-white hover:backdrop-blur-xl hover:shadow-md"
-            >
-              <IconMenu2Filled size={16} />
-            </IconButton>
-          </ContextMenu>
-        </div>
-      </div>
+      {#if showOverlay}
+        {@render hoverOverlay()}
       {/if}
     </div>
   {:else}
@@ -78,33 +100,12 @@
       src={imageUrl}
       alt={title}
       fallbackText={title}
-      class="w-full aspect-square {type === 'artist' ? 'rounded-full' : 'rounded-lg'}"
+      class="w-full aspect-square shadow-lg {type === 'artist'
+        ? 'rounded-full'
+        : 'rounded-lg'}"
     >
-      {#if type !== "artist" && hovered}
-        <div
-          class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex items-center justify-center"
-        >
-          <button
-            on:click|preventDefault|stopPropagation={() => playItem(id, type)}
-            class="p-3 text-white rounded-full flex items-center justify-center shadow-md border border-white/10 cursor-pointer backdrop-blur-xl transition-all"
-            style="background-color: {accentColors[0]}; border-color: {accentColors[1]}33;"
-          >
-            <IconPlayerPlayFilled size={24} />
-          </button>
-          <div class="absolute bottom-2 w-full pointer-events-auto flex items-center justify-between px-2">
-            {#if type === 'album'}
-              <Rating {id} itemType="album" {rating} size={16} rated_color={accentColors[1]} />
-            {/if}
-            <ContextMenu items={buildItemMenuItems(id, type)} let:toggle>
-              <IconButton
-                on:click={(e) => toggle(e)}
-                class="text-white hover:backdrop-blur-xl hover:shadow-md border border-transparent hover:border-white/10"
-              >
-                <IconMenu2Filled size={16} />
-              </IconButton>
-            </ContextMenu>
-          </div>
-        </div>
+      {#if type !== "artist" && showOverlay}
+        {@render hoverOverlay()}
       {/if}
     </CoverImage>
   {/if}

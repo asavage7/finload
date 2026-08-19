@@ -2,8 +2,12 @@
   import { onMount, onDestroy } from "svelte";
   import ViewLayout from "$lib/components/ViewLayout.svelte";
   import BackButton from "$lib/components/ui/BackButton.svelte";
-  import { apiUrl, wsUrl } from "$lib/backend";
+  import TasksPanel from "$lib/components/TasksPanel.svelte";
+  import { apiUrl } from "$lib/backend";
   import schemaData from "$lib/settings-schema.json";
+  import { goto } from "$app/navigation";
+  import { onboardingComplete, showConfirm } from "$lib/store";
+  import { subscribeJobStatus, startJob, idleJobState, type JobState } from "$lib/utils/backgroundJobs";
 
   type SelectOption = { value: string; label: string };
 
@@ -11,10 +15,13 @@
     key: string;
     label: string;
     description?: string;
-    control: "toggle" | "select" | "text";
+    control: "toggle" | "select" | "text" | "number";
     options?: SelectOption[];
     placeholder?: string;
     hidden?: boolean;
+    min?: number;
+    max?: number;
+    step?: number;
     showIf?: { key: string; value: string | boolean };
   };
 
@@ -31,74 +38,28 @@
   let saveStatus = "";
   let saveTimer: ReturnType<typeof setTimeout>;
 
-  type SyncState = {
-    status: "idle" | "running" | "complete" | "error";
-    message: string;
-    processed: number;
-    total: number;
-    added: number;
-    removed: number;
-  };
-
-  let syncState: SyncState = {
-    status: "idle",
-    message: "",
-    processed: 0,
-    total: 0,
-    added: 0,
-    removed: 0,
-  };
-  let syncWs: WebSocket | null = null;
+  let syncState: JobState = { ...idleJobState, added: 0, updated: 0, removed: 0 };
 
   $: syncPercent =
     syncState.total > 0
       ? Math.min(100, Math.round((syncState.processed / syncState.total) * 100))
       : 0;
 
-  type EnrichState = {
-    status: "idle" | "running" | "complete" | "error";
-    message: string;
-    processed: number;
-    total: number;
-  };
-
-  let enrichState: EnrichState = { status: "idle", message: "", processed: 0, total: 0 };
-  let enrichPollTimer: ReturnType<typeof setInterval> | null = null;
-
-  async function fetchEnrichStatus() {
-    try {
-      const res = await fetch(apiUrl("/api/metadata/status"));
-      if (res.ok) enrichState = await res.json();
-    } catch { /* backend unavailable */ }
-    // Poll while running; stop once idle/complete/error.
-    if (enrichState.status === "running" && !enrichPollTimer) {
-      enrichPollTimer = setInterval(fetchEnrichStatus, 3000);
-    } else if (enrichState.status !== "running" && enrichPollTimer) {
-      clearInterval(enrichPollTimer);
-      enrichPollTimer = null;
-    }
-  }
-
-  function connectSyncSocket() {
-    syncWs = new WebSocket(wsUrl("/ws/sync"));
-    syncWs.onmessage = (event) => {
-      syncState = JSON.parse(event.data);
-    };
-  }
+  let unsubscribeJobs: Array<() => void> = [];
 
   async function startSync() {
     if (syncState.status === "running") return;
     // Optimistic update so the button reacts instantly; the socket corrects it.
     syncState = { ...syncState, status: "running", message: "Starting…", processed: 0, total: 0 };
     try {
-      await fetch(apiUrl("/api/sync"), { method: "POST" });
+      await startJob("sync");
     } catch {
       syncState = { ...syncState, status: "error", message: "Could not reach backend" };
     }
   }
 
   onMount(async () => {
-    connectSyncSocket();
+    unsubscribeJobs = [subscribeJobStatus("sync", (s) => (syncState = s))];
     try {
       const res = await fetch(apiUrl("/api/settings"));
       if (res.ok) values = await res.json();
@@ -106,13 +67,10 @@
       // backend unavailable
     }
     loaded = true;
-    fetchEnrichStatus();
   });
 
   onDestroy(() => {
-    syncWs?.close();
-    syncWs = null;
-    if (enrichPollTimer) clearInterval(enrichPollTimer);
+    unsubscribeJobs.forEach((unsubscribe) => unsubscribe());
   });
 
   function isVisible(setting: SettingDef): boolean {
@@ -147,6 +105,32 @@
   function handleTextBlur(setting: SettingDef, e: Event) {
     saveSetting(setting.key, (e.currentTarget as HTMLInputElement).value);
   }
+
+  function handleNumberBlur(setting: SettingDef, e: Event) {
+    const raw = Number((e.currentTarget as HTMLInputElement).value);
+    if (Number.isNaN(raw)) return;
+    let value = raw;
+    if (setting.min != null) value = Math.max(setting.min, value);
+    if (setting.max != null) value = Math.min(setting.max, value);
+    saveSetting(setting.key, value);
+  }
+
+  async function rerunSetup() {
+    const confirmed = await showConfirm({
+      title: "Re-run setup?",
+      message: "This may interrupt playback and switch your library source. Your existing libraries won't be deleted.",
+      confirmLabel: "Continue",
+    });
+    if (!confirmed) return;
+
+    await fetch(apiUrl("/api/settings"), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ onboarding_complete: false }),
+    });
+    onboardingComplete.set(false);
+    goto("/onboarding");
+  }
 </script>
 
 <ViewLayout>
@@ -171,6 +155,26 @@
       <div class="p-8 text-zinc-500 text-sm">Connecting to backend…</div>
     {:else}
       <div class="max-w-2xl mx-auto px-6 py-6 flex flex-col gap-8">
+
+        <section>
+          <h2 class="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-3">
+            Setup
+          </h2>
+          <div class="bg-zinc-800 rounded-xl border border-white/5 p-4 flex items-center justify-between gap-4">
+            <div class="min-w-0">
+              <div class="text-sm font-medium text-white">Re-run setup wizard</div>
+              <div class="text-xs text-zinc-500 mt-0.5">
+                Reconfigure your library source from scratch.
+              </div>
+            </div>
+            <button
+              on:click={rerunSetup}
+              class="px-4 py-1.5 rounded-lg text-sm font-medium text-white bg-blue-500 hover:bg-blue-400 transition shrink-0"
+            >
+              Re-run setup
+            </button>
+          </div>
+        </section>
 
         <section>
           <h2 class="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-3">
@@ -214,15 +218,13 @@
             {/if}
           </div>
 
-          {#if enrichState.status === "running"}
-            <div class="text-xs text-zinc-500 flex items-center gap-2 mt-1 px-1">
-              <span class="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shrink-0"></span>
-              Adding metadata to your library, some images may be missing until this is complete
-              {#if enrichState.total > 0}
-                <span class="text-zinc-600">({enrichState.processed}/{enrichState.total})</span>
-              {/if}
-            </div>
-          {/if}
+        </section>
+
+        <section>
+          <h2 class="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-3">
+            Tasks
+          </h2>
+          <TasksPanel />
         </section>
 
         {#each schema.sections as section (section.id)}
@@ -247,6 +249,7 @@
                       <button
                         role="switch"
                         aria-checked={!!values[setting.key]}
+                        aria-label={setting.label}
                         class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none"
                         class:bg-blue-500={!!values[setting.key]}
                         class:bg-zinc-700={!values[setting.key]}
@@ -256,7 +259,7 @@
                           class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200"
                           class:translate-x-5={!!values[setting.key]}
                           class:translate-x-0={!values[setting.key]}
-                        />
+                        ></span>
                       </button>
 
                     {:else if setting.control === "select" && setting.options}
@@ -277,6 +280,17 @@
                         placeholder={setting.placeholder ?? ""}
                         value={String(values[setting.key] ?? "")}
                         on:blur={(e) => handleTextBlur(setting, e)}
+                      />
+
+                    {:else if setting.control === "number"}
+                      <input
+                        type="number"
+                        class="bg-zinc-700 border border-white/10 text-sm text-white rounded-lg px-3 py-1.5 outline-none focus:ring-1 focus:ring-white/20 w-24 shrink-0"
+                        min={setting.min}
+                        max={setting.max}
+                        step={setting.step}
+                        value={Number(values[setting.key] ?? 0)}
+                        on:blur={(e) => handleNumberBlur(setting, e)}
                       />
                     {/if}
                   </div>

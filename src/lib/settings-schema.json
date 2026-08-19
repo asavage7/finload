@@ -32,23 +32,22 @@
           }
         },
         {
-          "key": "jellyfin_api_key",
-          "label": "Jellyfin API key",
-          "description": "API key for accessing your Jellyfin server (can be generated in the dashboard)",
+          "key": "jellyfin_username",
+          "label": "Jellyfin username",
+          "description": "Your Jellyfin account username",
           "control": "text",
-          "placeholder": "abcdef1234567890",
-          "hidden": true,
+          "placeholder": "username",
           "showIf": {
             "key": "library_source",
             "value": "jellyfin"
           }
         },
         {
-          "key": "jellyfin_user_id",
-          "label": "Jellyfin User ID",
-          "description": "User ID (Can be pulled online via Dashboard > Users > Edit User > Copy ID from browser URL)",
+          "key": "jellyfin_password",
+          "label": "Jellyfin password",
+          "description": "Your Jellyfin account password",
           "control": "text",
-          "placeholder": "abcdef1234567890",
+          "placeholder": "",
           "hidden": true,
           "showIf": {
             "key": "library_source",
@@ -65,6 +64,12 @@
             "key": "library_source",
             "value": "local"
           }
+        },
+        {
+          "key": "use_album_art_for_tracks",
+          "label": "Use album art for tracks",
+          "description": "Show the album cover for tracks instead of per-track artwork. Per-track artwork requires very consistent tagging.",
+          "control": "toggle"
         }
       ]
     },
@@ -129,49 +134,6 @@
             "key": "enable_replay_gain",
             "value": true
           }
-        },
-        {
-          "key": "enable_crossfade",
-          "label": "Crossfade",
-          "description": "Enable crossfade between tracks. Disables gapless playback.",
-          "control": "toggle"
-        },
-        {
-          "key": "crossfade_mode",
-          "label": "Crossfade mode",
-          "description": "Choose how to apply crossfading",
-          "control": "select",
-          "options": [
-            {
-              "value": "always",
-              "label": "Always"
-            },
-            {
-              "value": "non_album",
-              "label": "Non-Albums"
-            },
-            {
-              "value": "shuffle_only",
-              "label": "Shuffle Only"
-            }
-          ],
-          "showIf": {
-            "key": "enable_crossfade",
-            "value": true
-          }
-        },
-        {
-          "key": "crossfade_duration",
-          "label": "Crossfade duration",
-          "description": "Duration of the crossfade in seconds",
-          "control": "number",
-          "min": 0,
-          "max": 10,
-          "step": 0.5,
-          "showIf": {
-            "key": "enable_crossfade",
-            "value": true
-          }
         }
       ]
     },
@@ -215,6 +177,24 @@
           "placeholder": "123",
           "showIf": {
             "key": "enable_online_metadata",
+            "value": true
+          }
+        },
+        {
+          "key": "enable_genre_enrichment",
+          "label": "Genre enrichment",
+          "description": "Look up additional genres from MusicBrainz and Last.fm beyond what your library source provides",
+          "control": "toggle"
+        },
+        {
+          "key": "lastfm_api_key",
+          "label": "Last.fm API key",
+          "description": "Free key from last.fm/api/account/create — required for Last.fm genre lookups",
+          "control": "text",
+          "placeholder": "",
+          "hidden": true,
+          "showIf": {
+            "key": "enable_genre_enrichment",
             "value": true
           }
         }

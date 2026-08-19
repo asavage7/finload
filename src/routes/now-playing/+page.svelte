@@ -14,11 +14,14 @@
   style="background-color: var(--player-accent-dark);"
 >
   <BackButton class="absolute top-4 left-4" />
-  <img
-    src={getImageUrl($playerState.current_track?.album_id || "default", 800)}
-    alt=""
-    class="absolute inset-0 w-full object-cover blur-3xl opacity-25 scale-110 pointer-events-none z-0"
-  />
+  <div class="absolute inset-0 w-full opacity-25 pointer-events-none z-0">
+    <CoverImage
+      src={getImageUrl($playerState.current_track?.album_id || "default", 800)}
+      alt=""
+      showPlaceholder={false}
+      class="w-full h-full blur-3xl"
+    />
+  </div>
   <div
     class="flex-1 flex flex-col text-center items-center pb-24 pt-4 z-10 gap-2"
   >

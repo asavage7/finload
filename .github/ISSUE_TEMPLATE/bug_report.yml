@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in Finload does not work
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install it
+      options:
+        - .deb
+        - .rpm
+        - AppImage
+        - Built from source
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Finload version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: distro
+    attributes:
+      label: Distro and version
+      placeholder: "Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: library-source
+    attributes:
+      label: Library source
+      options:
+        - Jellyfin
+        - Local files
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Backend output
+      description: >
+        Playback, sync and enrichment all run in the Python sidecar, and its
+        errors only show on stdout. Launch the app from a terminal and paste
+        anything it printed around the time of the problem.
+      render: shell

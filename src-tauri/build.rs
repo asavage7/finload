@@ -37,18 +37,24 @@ fn find_mpv_dll(target: &str) -> Option<String> {
 
 fn main() {
     let target = env::var("TARGET").unwrap();
-    let profile = env::var("PROFILE").unwrap();
 
     let out_dir = Path::new("binaries");
     let binary_name = format!("python-backend-{}", target);
-    let exe_ext = if target.contains("windows") { ".exe" } else { "" };
+    let exe_ext = if target.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
     let target_binary_path = out_dir.join(format!("{}{}", binary_name, exe_ext));
 
     if !out_dir.exists() {
         fs::create_dir_all(out_dir).unwrap();
     }
 
-    let skip = env::var("SKIP_PYINSTALLER").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
+    println!("cargo:rerun-if-env-changed=FINLOAD_TRIM_MPV");
+    let skip = env::var("SKIP_PYINSTALLER")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
 
     // Rebuild Python backend if binary doesn't exist, or during dev/release (unless explicitly skipped)
     // This ensures Python changes are always picked up during development
@@ -61,26 +67,34 @@ fn main() {
             "../src-backend/.venv/bin/pyinstaller"
         };
 
-        let mut args: Vec<String> = vec![
-            "--onefile".into(),
-            "--name".into(),
-            binary_name.clone(),
-            "--distpath".into(),
-            "binaries".into(),
-            // Include uvicorn/starlette dynamic imports that static analysis misses
-            "--collect-all".into(),
-            "uvicorn".into(),
-            "--collect-all".into(),
-            "starlette".into(),
-        ];
+        let mut cmd = Command::new(pyinstaller_path);
+        cmd.args([
+            "--distpath",
+            "binaries",
+            "--noconfirm",
+            "../src-backend/finload.spec",
+        ])
+        .env("FINLOAD_BINARY_NAME", &binary_name);
 
-        // On Windows, find and bundle mpv-2.dll (required by python-mpv at runtime)
+        // By default the sidecar bundles libmpv's full GUI/codec dependency
+        // closure, since that's the only variant that works everywhere,
+        // including portable targets like AppImage that must run on systems
+        // with no libmpv installed at all. deb/rpm builds declare libmpv2 as
+        // a package dependency (see tauri.conf.json), so they don't need the
+        // bundled copy; set FINLOAD_TRIM_MPV when building just those targets
+        // to strip it and rely on the system's libmpv.so.2 instead — see
+        // finload.spec for the stripping logic. Never set it for a build that
+        // also produces an AppImage in the same invocation.
+        if let Ok(trim) = env::var("FINLOAD_TRIM_MPV") {
+            cmd.env("FINLOAD_TRIM_MPV", trim);
+        }
+
+        // On Windows, find and bundle mpv-2.dll (required by python-mpv at runtime).
         if target.contains("windows") {
             match find_mpv_dll(&target) {
                 Some(dll_path) => {
                     println!("cargo:warning=Bundling mpv-2.dll from: {}", dll_path);
-                    args.push("--add-binary".into());
-                    args.push(format!("{};.", dll_path));
+                    cmd.env("FINLOAD_MPV_DLL", &dll_path);
                 }
                 None => {
                     println!("cargo:warning=mpv-2.dll not found — audio will not work in the bundled app.");
@@ -89,22 +103,16 @@ fn main() {
             }
         }
 
-        args.push("../src-backend/main.py".into());
-
-        let status = Command::new(pyinstaller_path)
-            .args(&args)
-            .status()
-            .expect(
-                "Failed to execute PyInstaller. \
-                 Ensure the venv exists: cd src-backend && python -m venv .venv && pip install -r requirements.txt",
-            );
+        let status = cmd.status().expect(
+            "Failed to execute PyInstaller. \
+             Ensure the venv exists: cd src-backend && python -m venv .venv && pip install -r requirements.txt",
+        );
 
         if !status.success() {
             panic!("PyInstaller failed to compile the Python backend.");
         }
 
         let _ = fs::remove_dir_all("build");
-        let _ = fs::remove_file(format!("{}.spec", binary_name));
     }
 
     tauri_build::build();

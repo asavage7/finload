@@ -1,8 +1,9 @@
 """Online metadata enrichment via TheAudioDB.
 
-Fetches artist bios, profile images, fanart, and album descriptions.
-Runs as a background task triggered after library sync. Uses the same
-listener/state pattern as SyncManager so the frontend can poll progress.
+Fetches artist bios and profile images. Runs as a background task triggered
+after library sync; individual artists can also be enriched on demand (the
+artist page requests this the first time it renders an artist with no bio).
+Progress is exposed as a plain state dict that the frontend polls.
 
 TheAudioDB free key: "123" (personal use). Configurable via settings.
 """
@@ -10,126 +11,75 @@ import datetime
 import io
 import json
 import threading
-import time
 import urllib.parse
 import urllib.request
 from typing import Optional
 
 from PIL import Image
 
-from database import Artist, Album, db
+from background import BackgroundJob
+from config import USER_AGENT
+from database import Artist
+from providers.base import cached_image_path
 
 _REQUEST_TIMEOUT = 10
-_USER_AGENT = "finload/1.0"
 
-# Sizes to cache for the artist profile thumb (matches existing image cache convention).
-_THUMB_SIZES = (220, 800)
+# Sizes to cache for the artist profile thumb (matches the image cache convention).
+_THUMB_SIZES = (240, 800)
 
 
-class MetadataManager:
+class MetadataManager(BackgroundJob):
     def __init__(self, settings):
+        super().__init__()
         self._settings = settings
-        self._lock = threading.Lock()
-        self.state = {
-            "status": "idle",   # idle | running | complete | error
-            "message": "",
-            "processed": 0,
-            "total": 0,
-        }
-        self._listeners: list = []
-
-    # ------------------------------------------------------------------
-    # Listener pattern (mirrors SyncManager / PlaybackManager)
-    # ------------------------------------------------------------------
-
-    def add_listener(self, callback) -> None:
-        self._listeners.append(callback)
-        callback(dict(self.state))
-
-    def remove_listener(self, callback) -> None:
-        if callback in self._listeners:
-            self._listeners.remove(callback)
-
-    def _emit(self, **changes) -> None:
-        self.state.update(changes)
-        snapshot = dict(self.state)
-        for listener in self._listeners:
-            try:
-                listener(snapshot)
-            except Exception:
-                pass
-
-    @property
-    def is_running(self) -> bool:
-        return self.state["status"] == "running"
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def start_background_enrichment(self, force: bool = False) -> bool:
-        """Enrich all un-enriched artists/albums in a background thread.
+    def start(self, force: bool = False) -> bool:
+        """Enrich all un-enriched artists in a background thread.
 
-        force=True re-enriches items regardless of enriched_at.
+        force=True re-enriches artists regardless of enriched_at.
         Returns False if already running or if online metadata is disabled.
         """
         if not self._settings.get("enable_online_metadata"):
             return False
-        with self._lock:
-            if self.is_running:
-                return False
-        threading.Thread(target=self._run, args=(force,), daemon=True).start()
-        return True
+        return super().start(force=force)
 
-    def enrich_artist_now(self, artist_id: str) -> bool:
-        """Synchronously enrich a single artist (called on-demand from API)."""
+    def enrich_artist_async(self, artist_id: str) -> bool:
+        """Enrich a single artist in the background, skipping already-enriched ones.
+
+        Fire-and-forget for one item, not tracked via ``self.state`` — a
+        separate concern from the "enrich everything" job above.
+        """
+        if not self._settings.get("enable_online_metadata"):
+            return False
         artist = Artist.get_or_none(Artist.id == artist_id)
-        if not artist:
+        if not artist or artist.enriched_at is not None:
             return False
-        self._enrich_artist(artist)
-        return True
-
-    def enrich_album_now(self, album_id: str) -> bool:
-        """Synchronously enrich a single album (called on-demand from API)."""
-        album = Album.get_or_none(Album.id == album_id)
-        if not album:
-            return False
-        self._enrich_album(album)
+        threading.Thread(target=self._enrich_artist, args=(artist,), daemon=True).start()
         return True
 
     # ------------------------------------------------------------------
     # Background worker
     # ------------------------------------------------------------------
 
-    def _run(self, force: bool) -> None:
-        try:
-            self._emit(status="running", message="Gathering items to enrich…", processed=0, total=0)
+    def _run(self, force: bool = False) -> None:
+        self._emit(message="Gathering artists to enrich…")
 
-            if force:
-                artists = list(Artist.select())
-                albums = list(Album.select().join(Artist))
-            else:
-                artists = list(Artist.select().where(Artist.enriched_at.is_null()))
-                albums = list(Album.select().join(Artist).where(Album.enriched_at.is_null()))
+        if force:
+            artists = list(Artist.select())
+        else:
+            artists = list(Artist.select().where(Artist.enriched_at.is_null()))
 
-            total = len(artists) + len(albums)
-            self._emit(total=total)
-            processed = 0
+        self._emit(total=len(artists))
 
-            for artist in artists:
-                self._enrich_artist(artist)
-                processed += 1
-                self._emit(processed=processed, message=f"Enriching: {artist.name}")
+        for processed, artist in enumerate(artists, start=1):
+            self._enrich_artist(artist)
+            self._emit(processed=processed, message=f"Enriching: {artist.name}")
 
-            for album in albums:
-                self._enrich_album(album)
-                processed += 1
-                self._emit(processed=processed, message=f"Enriching: {album.title}")
-
-            self._emit(status="complete", processed=processed,
-                       message=f"Enriched {len(artists)} artists, {len(albums)} albums")
-        except Exception as exc:
-            self._emit(status="error", message=str(exc))
+        self._emit(status="complete", message=f"Enriched {len(artists)} artists")
 
     # ------------------------------------------------------------------
     # TheAudioDB API helpers
@@ -142,7 +92,7 @@ class MetadataManager:
         """Make a GET request to TheAudioDB and return parsed JSON, or None on failure."""
         key = self._api_key()
         url = f"https://www.theaudiodb.com/api/v1/json/{key}/{path}?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
                 return json.loads(resp.read().decode("utf-8"))
@@ -152,7 +102,7 @@ class MetadataManager:
 
     def _download_image(self, url: str, dest_path: str, max_width: int = 0) -> bool:
         """Download an image URL to dest_path, optionally resizing to max_width."""
-        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
                 data = resp.read()
@@ -167,29 +117,12 @@ class MetadataManager:
             print(f"[metadata] Image download failed ({url}): {exc}")
             return False
 
-    def _cache_dir(self) -> str:
-        """Return the image cache directory (matches BaseMediaProvider.cache_dir)."""
-        import os
-        from platformdirs import user_cache_dir
-        cache_dir = user_cache_dir("finload")
-        os.makedirs(cache_dir, exist_ok=True)
-        return cache_dir
-
-    def _thumb_path(self, artist_id: str, size: int) -> str:
-        import os
-        suffix = str(size) if size > 0 else "original"
-        return os.path.join(self._cache_dir(), f"{artist_id}_{suffix}.jpg")
-
-    def _fanart_path(self, artist_id: str) -> str:
-        import os
-        return os.path.join(self._cache_dir(), f"{artist_id}_fanart.jpg")
-
     # ------------------------------------------------------------------
     # Enrichment logic
     # ------------------------------------------------------------------
 
     def _enrich_artist(self, artist: Artist) -> None:
-        """Fetch bio + images for one artist from TheAudioDB."""
+        """Fetch bio + profile images for one artist from TheAudioDB."""
         now = datetime.datetime.now()
         data = self._tadb_get("search.php", {"s": artist.name})
         artists_list = (data or {}).get("artists") or []
@@ -204,21 +137,11 @@ class MetadataManager:
             bio = entry.get("strBiographyEN") or entry.get("strBiography") or ""
             bio_source = "theaudiodb" if bio else ""
 
-            cache_dir = self._cache_dir()
-
-            # Profile thumb — cached at multiple sizes for the circular artist image.
+            # Profile thumb, cached at the same sizes the image API serves.
             thumb_url = entry.get("strArtistThumb") or ""
             if thumb_url:
                 for size in _THUMB_SIZES:
-                    self._download_image(thumb_url, self._thumb_path(artist.id, size), max_width=size)
-
-            # Fanart — wide landscape image for the artist page banner.
-            fanart_url = (entry.get("strArtistFanart")
-                          or entry.get("strArtistFanart2")
-                          or entry.get("strArtistFanart3")
-                          or "")
-            if fanart_url:
-                self._download_image(fanart_url, self._fanart_path(artist.id), max_width=1280)
+                    self._download_image(thumb_url, cached_image_path(artist.id, size), max_width=size)
 
         Artist.update(
             bio=bio,
@@ -226,24 +149,3 @@ class MetadataManager:
             tadb_id=tadb_id or None,
             enriched_at=now,
         ).where(Artist.id == artist.id).execute()
-
-    def _enrich_album(self, album: Album) -> None:
-        """Fetch description for one album from TheAudioDB."""
-        now = datetime.datetime.now()
-        artist_name = album.artist.name if album.artist else ""
-        data = self._tadb_get("searchalbum.php", {"s": artist_name, "a": album.title})
-        albums_list = (data or {}).get("album") or []
-
-        description = ""
-        tadb_id = None
-
-        if albums_list:
-            entry = albums_list[0]
-            tadb_id = str(entry.get("idAlbum") or "")
-            description = entry.get("strDescriptionEN") or entry.get("strDescription") or ""
-
-        Album.update(
-            description=description,
-            tadb_id=tadb_id or None,
-            enriched_at=now,
-        ).where(Album.id == album.id).execute()

@@ -14,6 +14,8 @@
         IconLibraryFilled,
         IconLayoutSidebarLeftCollapse,
         IconLayoutSidebarLeftExpand,
+        IconSettings,
+        IconSettingsFilled,
     } from "@tabler/icons-svelte";
     import IconButton from "$lib/components/ui/IconButton.svelte";
 
@@ -31,9 +33,19 @@
 
     const SEARCH_DEBOUNCE_MS = 180;
 
-    const navItems = [
+    type NavItem = {
+        label: string;
+        href: string;
+        icon: any;
+        activeIcon: any;
+        // A spacer before the item pushes it (and everything after) to the bottom.
+        bottom?: boolean;
+    };
+
+    const navItems: NavItem[] = [
         { label: "Home", href: "/", icon: IconHome, activeIcon: IconHomeFilled },
         { label: "Library", href: "/library", icon: IconLibrary, activeIcon: IconLibraryFilled },
+        { label: "Settings", href: "/settings", icon: IconSettings, activeIcon: IconSettingsFilled, bottom: true },
     ];
 
     $: condensed = $leftPanelCondensed;
@@ -134,6 +146,8 @@
         <IconButton
             white
             on:click={() => leftPanelCondensed.update((c) => !c)}
+            aria-label={condensed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!condensed}
             class="bg-white/5"
         >
             {#if condensed}
@@ -151,8 +165,8 @@
         bind:this={searchAnchor}
         on:click={expandAndFocusSearch}
         class="flex items-center gap-2 px-2 {condensed
-            ? 'py-2'
-            : 'py-1.5'} rounded-xl bg-white/5 border border-white/5 focus-within:border-white/15 transition"
+            ? 'py-2 hover:bg-white/5 cursor-pointer border-transparent'
+            : 'py-1.5 bg-white/5 border-white/10'} rounded-full border focus-within:border-white/10 transition"
     >
         <IconSearch size={16} class="text-zinc-400 shrink-0" />
         {#if !condensed}
@@ -185,16 +199,19 @@
     />
 
     <!-- Navigation -->
-    <nav class="flex flex-col gap-1 mt-1">
+    <nav class="flex flex-col gap-1 mt-1 flex-1">
         {#each navItems as item}
             {@const active = isActive(item.href)}
+            {#if item.bottom}
+                <div class="flex-1"></div>
+            {/if}
             <a
                 href={item.href}
                 title={item.label}
                 class="flex items-center {condensed
                     ? 'py-2'
-                    : 'gap-3 py-1.5'} px-2 rounded-xl border text-sm font-semibold transition {active
-                    ? 'bg-white/10 text-white border-white/10'
+                    : 'gap-3 py-1.5'} px-2 rounded-lg border text-sm transition {active
+                    ? 'bg-white/10 text-white border-white/10 font-semibold'
                     : 'text-zinc-400 hover:text-white hover:bg-white/5 border-transparent'}"
             >
                 <svelte:component

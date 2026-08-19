@@ -6,6 +6,12 @@ from pathlib import Path
 from platformdirs import user_data_dir
 from dotenv import load_dotenv
 
+# Single source of truth for how the app identifies itself, both to external
+# services (User-Agent) and to media servers (client name/version).
+APP_NAME = "Finload"
+APP_VERSION = "0.1.0"
+USER_AGENT = f"{APP_NAME.lower()}/{APP_VERSION}"
+
 
 def _find_env_file() -> Path | None:
     candidates = []

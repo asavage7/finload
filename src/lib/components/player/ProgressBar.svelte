@@ -39,7 +39,7 @@
     value={localValue}
     on:input={handleInput}
     on:change={handleChange}
-    class="w-full h-1 opacity-0 cursor-pointer absolute inset-0 z-10"
+    class="w-full opacity-0 cursor-pointer absolute inset-0 z-10"
   />
 
   <div 

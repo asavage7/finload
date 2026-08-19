@@ -15,6 +15,7 @@ export type QueueItemState = {
     track: {
         id: string | number | null;
         album_id: string | null;
+        artist_id: string | null;
         album_name: string;
         title: string;
         artist_name: string;
@@ -36,6 +37,7 @@ export type PlayerState = {
     accent_colors: [string, string, string];
     repeat_mode: 0 | 1 | 2;
     shuffle: boolean;
+    radio_enabled: boolean;
 };
 
 // Hex (not rgb()) so the `{color}25` alpha-append pattern used in styles stays
@@ -57,7 +59,12 @@ export const playerState = writable<PlayerState>({
     accent_colors: DEFAULT_ACCENT_COLORS,
     repeat_mode: 0,
     shuffle: false,
+    radio_enabled: false,
 });
+
+// null = not yet checked against the backend; true/false = known state.
+// Drives the +layout.svelte redirect guard to /onboarding.
+export const onboardingComplete = writable<boolean | null>(null);
 
 export const queuePanelActive = writable(false);
 
@@ -127,8 +134,6 @@ export const librarySortState = writable<Record<string, SortState>>({
     Artists: { field: 'name', order: 'asc' },
     Playlists: { field: 'name', order: 'asc' },
 });
-
-export const queuePanelActiveTab = writable<'Queue' | 'Lyrics'>('Queue');
 
 export const playlistPickerStore = writable<{ open: boolean; trackIds: string[] }>({
     open: false,

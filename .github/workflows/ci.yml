@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a branch makes the in-flight run for that branch pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Every job pins ubuntu-24.04 rather than ubuntu-latest: 22.04 ships mpv 0.34
+# (libmpv.so.1), while the deb declares a dependency on libmpv2 (libmpv.so.2),
+# which only exists from 24.04 on. Pinning also keeps the glibc floor of the
+# release bundles from moving under us when the "latest" label rolls forward.
+jobs:
+  frontend:
+    name: Frontend (check + build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # svelte-check: fails the job on type errors. Warnings do not fail it.
+      - run: npm run check
+
+      # Catches build-time failures (bad imports, Vite/Tailwind config) that
+      # type-checking alone does not.
+      - run: npm run build
+
+  backend:
+    name: Backend (deps + import)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: src-backend/requirements.txt
+
+      # python-mpv resolves libmpv.so.2 through ctypes at import time, so the
+      # import smoke test below needs the real library present.
+      - name: Install libmpv
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmpv2
+
+      - run: pip install -r src-backend/requirements.txt
+
+      - name: Byte-compile every module
+        run: python -m compileall -q src-backend
+
+      # Importing main.py builds the FastAPI app and wires every router, so this
+      # catches missing dependencies and broken imports that compileall cannot.
+      # The mpv core itself is created on the startup event, not at import, so no
+      # audio device is touched here. Data lands in a temp dir, not the runner's
+      # real user-data location.
+      - name: Import the app
+        working-directory: src-backend
+        env:
+          FINLOAD_DATA_DIR: ${{ runner.temp }}/finload-data
+        run: python -c "import main; assert main.app is not None; print('app imported OK')"
+
+  rust:
+    name: Rust (fmt + clippy)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libmpv-dev \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # build.rs runs PyInstaller unless SKIP_PYINSTALLER is set *and* the
+      # sidecar already exists, and tauri-build requires the externalBin path to
+      # be present. A placeholder satisfies both without the multi-minute
+      # PyInstaller run, which lint does not need — the release workflow builds
+      # the real sidecar.
+      - name: Stub the sidecar binary
+        run: |
+          mkdir -p src-tauri/binaries
+          touch src-tauri/binaries/python-backend-x86_64-unknown-linux-gnu
+          chmod +x src-tauri/binaries/python-backend-x86_64-unknown-linux-gnu
+
+      - name: rustfmt
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: clippy
+        working-directory: src-tauri
+        env:
+          SKIP_PYINSTALLER: "1"
+        run: cargo clippy --all-targets -- -D warnings

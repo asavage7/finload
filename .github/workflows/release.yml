@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 0.2.0). Builds the artifacts but publishes no release."
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux bundles
+    # Pinned rather than ubuntu-latest for two reasons: 22.04 ships mpv 0.34
+    # (libmpv.so.1) while the deb declares libmpv2 (libmpv.so.2), and the runner's
+    # glibc sets the floor for what the AppImage will run on. Both should move
+    # deliberately, not whenever the "latest" label rolls forward.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building version $version"
+
+      - name: Install Tauri and mpv system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libmpv-dev \
+            patchelf \
+            fuse3 \
+            rpm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: src-backend/requirements.txt
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Stamp the version into every manifest
+        run: node scripts/set-version.mjs "${{ steps.version.outputs.version }}"
+
+      - run: npm ci
+
+      # build.rs invokes this venv's pyinstaller by path, so it has to live
+      # exactly here.
+      - name: Create the backend venv
+        run: |
+          python -m venv src-backend/.venv
+          src-backend/.venv/bin/pip install --upgrade pip
+          src-backend/.venv/bin/pip install -r src-backend/requirements.txt
+
+      # deb and rpm declare libmpv2 / libmpv.so.2()(64bit) as a package
+      # dependency, so FINLOAD_TRIM_MPV=1 strips the ~170MB of bundled GUI/codec
+      # closure and lets them use the system library. The npm script sets it.
+      - name: Build deb and rpm
+        run: npm run build:tauri:linux-installers
+
+      # The AppImage has to run where no libmpv is installed at all, so it keeps
+      # the full closure — FINLOAD_TRIM_MPV must stay unset here. build.rs
+      # declares rerun-if-env-changed on it, so dropping the variable re-runs
+      # PyInstaller and rebuilds the sidecar untrimmed.
+      - name: Build AppImage
+        env:
+          # linuxdeploy is itself an AppImage and GitHub runners have no FUSE
+          # mount available to it; this makes it self-extract instead.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: npm run build:tauri:appimage
+
+      - name: Collect artifacts
+        id: collect
+        run: |
+          mkdir -p dist
+          bundle=src-tauri/target/release/bundle
+          cp "$bundle"/deb/*.deb dist/
+          cp "$bundle"/rpm/*.rpm dist/
+          cp "$bundle"/appimage/*.AppImage dist/
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -lh dist
+
+      # Proves the dlopen'd libmpv dependency actually made it into the package
+      # metadata. Neither dpkg-shlibdeps nor rpm's soname scanner can see a
+      # ctypes/dlopen load, so these are declared by hand in tauri.conf.json and
+      # nothing but an explicit check catches them going missing.
+      - name: Verify declared libmpv dependency
+        run: |
+          set -e
+          echo "--- deb ---"
+          dpkg-deb -I dist/*.deb | grep -i "^ Depends:"
+          dpkg-deb -I dist/*.deb | grep -qi "libmpv2" \
+            || { echo "::error::deb is missing its libmpv2 dependency"; exit 1; }
+          echo "--- rpm ---"
+          rpm -qpR dist/*.rpm
+          rpm -qpR dist/*.rpm | grep -q "libmpv.so.2" \
+            || { echo "::error::rpm is missing its libmpv.so.2 dependency"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finload-linux-${{ steps.version.outputs.version }}
+          path: dist/*
+          retention-days: 14
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: true
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **Debian / Ubuntu** (24.04 or newer — needs `libmpv2`)
+            ```
+            sudo apt install ./finload_${{ steps.version.outputs.version }}_amd64.deb
+            ```
+
+            **Fedora / openSUSE**
+            ```
+            sudo dnf install ./finload-${{ steps.version.outputs.version }}-1.x86_64.rpm
+            ```
+
+            **Any distro** — the AppImage bundles its own mpv, so it needs nothing installed:
+            ```
+            chmod +x finload_${{ steps.version.outputs.version }}_amd64.AppImage
+            ./finload_${{ steps.version.outputs.version }}_amd64.AppImage
+            ```
+
+            Verify downloads against `SHA256SUMS.txt`.

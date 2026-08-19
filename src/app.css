@@ -10,6 +10,10 @@
 	--font-mono: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", monospace;
 	--breakpoint-6xl: 72rem; /* 1152px */
 	--breakpoint-7xl: 80rem; /* 1280px */
+	--7xl: 80rem; /* 1280px */
+	--8xl: 90rem; /* 1440px */
+	--9xl: 100rem; /* 1600px */
+	--10xl: 110rem; /* 1760px */
 }
 
 :root {
@@ -53,3 +57,15 @@ samp {
 }
 .slide-in-left  { animation: slide-in-left  180ms ease-out; }
 .slide-in-right { animation: slide-in-right 180ms ease-out; }
+
+/* Background orbs for the onboarding flow. Position/size are randomized and
+   re-targeted from JS (see onboarding/+page.svelte); this class just makes
+   those changes drift smoothly instead of jumping. transition-duration is
+   set inline per-orb since it's randomized per retarget. */
+.onboarding-orb {
+	position: absolute;
+	border-radius: 9999px;
+	transform: translate(-50%, -50%);
+	transition-property: top, left, width, height;
+	transition-timing-function: ease-in-out;
+}

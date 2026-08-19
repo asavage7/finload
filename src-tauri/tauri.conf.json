@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "finload",
-  "version": "0.1.0",
+  "version": "../package.json",
   "identifier": "com.asavage7.finload",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -24,6 +24,14 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Alex Savage",
+    "copyright": "Copyright © 2026 Alex Savage",
+    "homepage": "https://github.com/asavage7/finload",
+    "license": "GPL-3.0-only",
+    "licenseFile": "../LICENSE",
+    "category": "Music",
+    "shortDescription": "A Jellyfin music player for your personal library.",
+    "longDescription": "Finload is a desktop music player for Jellyfin and local music libraries, aiming for a Spotify-like experience over your own collection: auto-generated recommendations, radio from any album, artist, track or playlist, gapless playback, synced lyrics, playlists and ratings.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -36,7 +44,12 @@
     ],
     "linux": {
       "deb": {
+        "section": "sound",
+        "priority": "optional",
         "depends": ["libmpv2"]
+      },
+      "rpm": {
+        "depends": ["libmpv.so.2()(64bit)"]
       }
     }
   }

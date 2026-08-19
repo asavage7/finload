@@ -19,12 +19,15 @@
     rightPanelReserve,
     panelsOverlay,
     DEFAULT_ACCENT_COLORS,
+    onboardingComplete,
   } from "$lib/store";
   import { fade } from "svelte/transition";
   import { onDestroy, onMount } from "svelte";
   import { apiUrl, wsUrl } from "$lib/backend";
   import { updatePlayerState } from "$lib/utils/store";
+  import { initMediaSession } from "$lib/utils/mediaSession";
   import { page } from "$app/stores";
+  import { goto } from "$app/navigation";
 
   let ws: WebSocket | null = null;
   let currentFetchController: AbortController | null = null;
@@ -71,6 +74,29 @@
     reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
   }
 
+  async function checkOnboarding() {
+    try {
+      const res = await fetch(apiUrl("/api/settings"));
+      if (res.ok) {
+        const s = await res.json();
+        onboardingComplete.set(!!s.onboarding_complete);
+        return;
+      }
+    } catch {
+      // backend unavailable
+    }
+    // Fail open: the backend can take a while to come up, and redirecting
+    // into a flow that itself needs the backend would be worse than just
+    // showing the normal app shell.
+    onboardingComplete.set(true);
+  }
+
+  // Bounces back to /onboarding any time it isn't complete, so it can't be
+  // escaped via the sidebar or browser back button.
+  $: if ($onboardingComplete === false && $page.url.pathname !== "/onboarding") {
+    goto("/onboarding");
+  }
+
   onMount(() => {
     const handlePlayerCommand = (event: Event) => {
       const e = event as CustomEvent<{ action: string; value?: unknown }>;
@@ -85,10 +111,13 @@
     window.addEventListener("player-command", handlePlayerCommand);
     window.addEventListener("resize", handleResize);
     connectSocket();
+    checkOnboarding();
+    const stopMediaSession = initMediaSession();
 
     return () => {
       window.removeEventListener("player-command", handlePlayerCommand);
       window.removeEventListener("resize", handleResize);
+      stopMediaSession();
     };
   });
 
@@ -153,9 +182,15 @@
     }
   }
 
-  // Now-playing is a full-screen view, so both edge panels step aside there
-  // (the queue is shown inline within that page instead).
-  $: isFullScreen = $page.url.pathname === "/now-playing";
+  // Now-playing and onboarding are full-screen views, so both edge panels
+  // step aside there (now-playing shows the queue inline within the page
+  // instead; onboarding has no need for either panel at all).
+  $: isFullScreen = $page.url.pathname === "/now-playing" || $page.url.pathname === "/onboarding";
+  $: isOnboardingRoute = $page.url.pathname === "/onboarding";
+  // The music quiz plays its own clips behind its own transport bar, and the
+  // footer would name the track the player is meant to be guessing.
+  $: hidesFooter =
+    isOnboardingRoute || $page.url.pathname.startsWith("/extras/music-quiz");
   $: showQueue = $queuePanelActive && !isFullScreen;
   $: showLeft = !isFullScreen;
 
@@ -211,11 +246,13 @@
       </SidePanel>
     {/if}
 
-    <div
-      class="absolute bottom-4 z-1000 transition-[left,right] duration-150 ease-out"
-      style="left: calc(1rem + {footerLeft}); right: calc(1rem + {footerRight})"
-    >
-      <FooterPlayer />
-    </div>
+    {#if !hidesFooter}
+      <div
+        class="absolute bottom-4 z-1000 transition-[left,right] duration-150 ease-out max-w-[var(--8xl)] mx-auto"
+        style="left: calc(1rem + {footerLeft}); right: calc(1rem + {footerRight})"
+      >
+        <FooterPlayer />
+      </div>
+    {/if}
   </div>
 </div>

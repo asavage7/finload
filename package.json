@@ -1,8 +1,16 @@
 {
   "name": "finload",
   "version": "0.1.0",
-  "description": "",
+  "description": "A Jellyfin music player with a Spotify-like experience for your personal library.",
   "type": "module",
+  "homepage": "https://github.com/asavage7/finload",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/asavage7/finload.git"
+  },
+  "bugs": {
+    "url": "https://github.com/asavage7/finload/issues"
+  },
   "scripts": {
     "dev": "npm run dev:all",
     "dev:frontend": "vite dev --host",
@@ -10,20 +18,25 @@
     "dev:all": "concurrently \"npm:dev:backend\" \"npm:dev:frontend\"",
     "dev:tauri": "tauri dev",
     "build:tauri": "tauri build",
-    "build:tauri:deb": "tauri build --bundles deb",
+    "build:tauri:deb": "FINLOAD_TRIM_MPV=1 tauri build --bundles deb",
+    "build:tauri:rpm": "FINLOAD_TRIM_MPV=1 tauri build --bundles rpm",
+    "build:tauri:linux-installers": "FINLOAD_TRIM_MPV=1 tauri build --bundles deb,rpm",
     "build:tauri:appimage": "tauri build --bundles appimage",
+    "build:linux": "npm run build:tauri:linux-installers && npm run build:tauri:appimage",
+    "version:set": "node scripts/set-version.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@fontsource/lato": "^5.2.7",
     "@tabler/icons-svelte": "^3.44.0",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "svelte-dnd-action": "^0.9.69"
   },
   "devDependencies": {
@@ -33,6 +46,7 @@
     "@tailwindcss/postcss": "^4.3.0",
     "@tailwindcss/vite": "^4.3.0",
     "@tauri-apps/cli": "^2",
+    "@types/node": "^26.2.0",
     "autoprefixer": "^10.5.0",
     "concurrently": "^8.0.0",
     "postcss": "^8.5.14",

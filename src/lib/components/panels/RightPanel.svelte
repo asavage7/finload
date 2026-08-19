@@ -5,14 +5,22 @@
         IconMenu2Filled,
         IconTrashXFilled,
         IconX,
+        IconInfinity,
     } from "@tabler/icons-svelte";
     import { formatTime } from "$lib/utils/formatTime";
-    import { dispatch, buildQueueItemMenuItems } from "$lib/utils/playback";
+    import {
+        dispatch,
+        buildQueueItemMenuItems,
+        buildTrackMenuItems,
+        playTrackById,
+        setRadioEnabled,
+    } from "$lib/utils/playback";
     import { getImageUrl } from "$lib/utils/media";
     import CoverImage from "$lib/components/CoverImage.svelte";
     import { apiUrl } from "$lib/backend";
     import ContextMenu from "$lib/components/ContextMenu.svelte";
     import IconButton from "$lib/components/ui/IconButton.svelte";
+    import { showConfirm } from "$lib/store";
 
     type LyricsLine = {
         time_ms: number;
@@ -24,20 +32,26 @@
         | { type: "unsynced"; text: string }
         | { type: "synced"; lines: LyricsLine[] };
 
+    type HistoryEntry = {
+        id: number;
+        track_id: string;
+        title: string;
+        artist_name: string;
+        artist_id: string | null;
+        album_name: string;
+        album_id: string | null;
+        duration_ms: number;
+        played_at: string;
+    };
+
     let lyrics: LyricsState = { type: "none" };
     let activeLyricIndex = -1;
     let loadingLyrics = false;
     let lyricsTrackId: string | null = null;
     let currentTrackId: string | null = null;
 
-    let lyricsContainer: HTMLDivElement;
     let lyricElements: HTMLButtonElement[] = [];
 
-    // Synced-lyric highlighting is driven entirely by each line's stored
-    // `time_ms` — no polling clock. The backend sends time_pos roughly once per
-    // second, so we anchor it to a wall-clock timestamp, extrapolate the current
-    // position between updates, and schedule a single timeout for the *next* line
-    // boundary. The timer only runs while synced lyrics are visible and playing.
     const LYRIC_LOOKAHEAD_MS = 300;
     let lyricTimer: ReturnType<typeof setTimeout> | null = null;
     let posAnchorSec = 0;
@@ -89,10 +103,6 @@
         });
     }
 
-    function loadData(tab: string) {
-        activeTab = tab;
-    }
-
     async function getLyrics(trackId: string) {
         loadingLyrics = true;
         lyricsTrackId = trackId;
@@ -125,8 +135,75 @@
         dispatch("clear_queue");
     }
 
-    let tabs = ["Queue", "Lyrics"];
+    // --- Play history ---
+
+    let historyItems: HistoryEntry[] = [];
+    let loadingHistory = false;
+
+    async function loadHistory() {
+        loadingHistory = true;
+        try {
+            const res = await fetch(apiUrl("/api/history"));
+            historyItems = res.ok ? await res.json() : [];
+        } catch {
+            historyItems = [];
+        } finally {
+            loadingHistory = false;
+        }
+    }
+
+    function removeHistoryEntry(entryId: number) {
+        historyItems = historyItems.filter((e) => e.id !== entryId);
+        fetch(apiUrl(`/api/history/${entryId}`), { method: "DELETE" }).catch(
+            () => {},
+        );
+    }
+
+    async function clearHistory() {
+        const confirmed = await showConfirm({
+            title: "Clear History",
+            message:
+                "Are you sure you want to clear your play history? This will affect your recommendations and cannot be undone.",
+            confirmLabel: "Clear History",
+            destructive: true,
+        });
+        if (!confirmed) return;
+
+        historyItems = [];
+        fetch(apiUrl("/api/history"), { method: "DELETE" }).catch(() => {});
+    }
+
+    function historyMenuItems(entry: HistoryEntry) {
+        return [
+            ...buildTrackMenuItems(entry.track_id),
+            { divider: true },
+            {
+                label: "Remove from History",
+                icon: IconTrashXFilled,
+                destructive: true,
+                action: () => removeHistoryEntry(entry.id),
+            },
+        ];
+    }
+
+    function timeAgo(iso: string): string {
+        const seconds = Math.max(
+            0,
+            (Date.now() - new Date(iso).getTime()) / 1000,
+        );
+        if (seconds < 60) return "now";
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+        return `${Math.floor(seconds / 86400)}d ago`;
+    }
+
+    const tabs = ["Queue", "History", "Lyrics"];
     let activeTab = "Queue";
+
+    function setTab(tab: string) {
+        activeTab = tab;
+        if (tab === "History") loadHistory();
+    }
 
     $: currentTrackId =
         $playerState.current_track?.id == null
@@ -176,16 +253,85 @@
     ) {
         void getLyrics(currentTrackId);
     }
+
+    // Whether any queue item has queue_type === 2
+    $: hasQueueType2 = $playerState.queue.some((it) => it.queue_type === 2);
 </script>
+
+<!-- Shared row layout for the queue and history lists. -->
+{#snippet trackRow(
+    imageId: string | null,
+    title: string,
+    artist: string,
+    artisthref: string,
+    album: string,
+    albumhref: string,
+    trailing: string,
+    menuItems: any[],
+    onSelect: () => void,
+    highlighted: boolean,
+)}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+        on:click={(e) => {
+            if (!(e.target as HTMLElement).closest("a")) onSelect();
+        }}
+        class="group flex items-center w-full gap-3 mb-1 p-1 pr-2 rounded-xl border border-transparent {highlighted
+            ? 'bg-white/5 border-white/10'
+            : 'bg-transparent hover:bg-white/5'} cursor-default transition"
+    >
+        <CoverImage
+            src={getImageUrl(imageId ?? "default", 240)}
+            alt={title}
+            fallbackText={title}
+            class="w-11 h-11 rounded-lg shrink-0"
+        />
+        <div class="flex flex-col justify-center min-w-0 flex-1">
+            <div class="text-sm font-bold truncate">{title}</div>
+            <div class="text-xs text-zinc-400 truncate">
+                <svelte:element
+                    this={artisthref ? "a" : "span"}
+                    href={artisthref || undefined}
+                    class={artisthref ? "hover:underline hover:text-white" : ""}
+                >{artist}</svelte:element>
+                <span> ∙ </span>
+                <svelte:element
+                    this={albumhref ? "a" : "span"}
+                    href={albumhref || undefined}
+                    class={albumhref ? "hover:underline hover:text-white" : ""}
+                >{album}</svelte:element>
+            </div>
+        </div>
+        <div
+            class="group relative flex items-center group shrink-0 h-8 min-w-8 justify-end rounded-md"
+        >
+            <div
+                class="time-text group-hover:opacity-0 transition-opacity duration-200 text-right text-zinc-400 text-xs whitespace-nowrap pr-1"
+            >
+                {trailing}
+            </div>
+            <ContextMenu items={menuItems} let:toggle>
+                <IconButton
+                    on:click={toggle}
+                    aria-label="Track options"
+                    class="absolute right-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+                >
+                    <IconMenu2Filled size={16} />
+                </IconButton>
+            </ContextMenu>
+        </div>
+    </div>
+{/snippet}
 
 <div class="flex flex-col h-full w-full">
     <div class="mx-2.5 flex gap-2 items-center my-1">
         <div
-            class="flex gap-1 rounded-full flex-1 my-2 bg-white/5 rounded-full"
+            class="flex rounded-full flex-1 my-2 bg-white/5 rounded-full"
         >
             {#each tabs as tab}
                 <button
-                    on:click={() => loadData(tab)}
+                    on:click={() => setTab(tab)}
                     class="border px-2 py-1.5 flex-1 rounded-full text-sm font-semibold transition {activeTab ===
                     tab
                         ? 'bg-white/10 text-white shadow-lg border-white/10'
@@ -198,63 +344,49 @@
         <IconButton
             white
             on:click={() => queuePanelActive.set(false)}
-            class="bg-white/5"
+            aria-label="Close queue panel"
+            class="bg-white/5 hover:bg-white/10"
         >
             <IconX size={16} />
         </IconButton>
     </div>
     {#if activeTab === "Queue"}
-        <div class="overflow-y-auto px-2 pb-4 flex-1">
-            {#each $playerState.queue as item}
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div
-                    on:click={() => jumpToQueueItem(item.id)}
-                    class="group flex items-center w-full gap-3 mb-1 p-1 pr-2 rounded-xl border border-transparent {item
-                        .track.id === $playerState.current_track?.id
-                        ? 'bg-white/5 border-white/10'
-                        : 'bg-transparent hover:bg-white/5'} cursor-default transition"
-                >
-                    <CoverImage
-                        src={getImageUrl(item.track.album_id ?? "default", 220)}
-                        alt={item.track.title}
-                        fallbackText={item.track.album_name || item.track.title}
-                        class="w-11 h-11 rounded-lg shrink-0"
-                    />
+        <div class="overflow-y-auto px-2 pb-1 flex-1 flex flex-col">
+            {#each $playerState.queue as item, i (item.id)}
+                {#if item.queue_type === 2 && (i === 0 || $playerState.queue[i - 1].queue_type !== 2)}
                     <div
-                        class="flex flex-col justify-center min-w-0 flex-1"
-                    >
-                        <div class="text-sm font-bold truncate">
-                            {item.track.title}
-                        </div>
-                        <div class="text-xs text-zinc-400 truncate">
-                            {item.track.artist_name} ∙ {item.track.album_name}
-                        </div>
-                    </div>
-                    <div
-                        class="group relative flex items-center group w-8 h-8 justify-center rounded-md"
-                    >
-                        <div
-                            class="time-text group-hover:opacity-0 transition-opacity duration-200 text-right text-zinc-400 text-xs"
-                        >
-                            {formatTime(item.track.runtime || 0, true)}
-                        </div>
-                        <ContextMenu
-                            items={buildQueueItemMenuItems(item.id)}
-                            let:toggle
-                        >
-                            <IconButton
-                                on:click={toggle}
-                                class="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-                            >
-                                <IconMenu2Filled size={16} />
-                            </IconButton>
-                        </ContextMenu>
-                    </div>
-                </div>
+                        class="mt-3 mb-2
+                 border-b border-white/10 text-md font-bold text-white"
+                    >Autoplay<p class="text-xs text-zinc-400 font-normal pb-1">New tracks will queue up as you listen</p></div>
+                {/if}
+                {@render trackRow(
+                    item.track.album_id,
+                    item.track.title,
+                    item.track.artist_name,
+                    item.track.artist_id
+                        ? `/artist/${item.track.artist_id}`
+                        : "",
+                    item.track.album_name,
+                    item.track.album_id
+                        ? `/album/${item.track.album_id}`
+                        : "",
+                    formatTime(item.track.runtime || 0, true),
+                    buildQueueItemMenuItems(item.id),
+                    () => jumpToQueueItem(item.id),
+                    item.is_current,
+                )}
             {/each}
         </div>
         <div class="flex items-center gap-3 p-2 border-t border-white/10">
+            <IconButton
+                active={$playerState.radio_enabled}
+                on:click={() => setRadioEnabled(!$playerState.radio_enabled)}
+                title={$playerState.radio_enabled
+                    ? "Infinite queue: on"
+                    : "Infinite queue: off"}
+            >
+                <IconInfinity size={16} />
+            </IconButton>
             <span class="time-text text-xs text-zinc-400 flex-1 text-right"
                 >{$playerState.queue.length}
                 {$playerState.queue.length === 1 ? "track" : "tracks"} ∙ {formatTime(
@@ -265,12 +397,44 @@
                     true,
                 )}</span
             >
-            <IconButton destructive on:click={clearQueue}>
+            <IconButton destructive on:click={clearQueue} aria-label="Clear queue">
                 <IconTrashXFilled size={16} />
             </IconButton>
         </div>
     {:else if activeTab === "History"}
-        <div class="p-4 text-sm text-zinc-400">History content goes here.</div>
+        <div class="overflow-y-auto px-2 pb-4 flex-1">
+            {#if loadingHistory}
+                <div class="p-4 text-sm text-zinc-400">Loading history...</div>
+            {:else if historyItems.length === 0}
+                <div class="p-4 text-sm text-zinc-400">Nothing played yet.</div>
+            {:else}
+                {#each historyItems as entry (entry.id)}
+                    {@render trackRow(
+                        entry.album_id,
+                        entry.title,
+                        entry.artist_name,
+                        `${entry.artist_id ? `/artist/${entry.artist_id}` : ""}`,
+                        entry.album_name,
+                        `${entry.album_id ? `/album/${entry.album_id}` : ""}`,
+                        timeAgo(entry.played_at),
+                        historyMenuItems(entry),
+                        () => playTrackById(entry.track_id),
+                        false,
+                    )}
+                {/each}
+            {/if}
+        </div>
+        {#if historyItems.length > 0}
+            <div class="flex items-center gap-3 p-2 border-t border-white/10">
+                <span class="time-text text-xs text-zinc-400 flex-1 text-right"
+                    >{historyItems.length}
+                    {historyItems.length === 1 ? "play" : "plays"}</span
+                >
+                <IconButton destructive on:click={clearHistory} aria-label="Clear history">
+                    <IconTrashXFilled size={16} />
+                </IconButton>
+            </div>
+        {/if}
     {:else if activeTab === "Lyrics"}
         {#if loadingLyrics}
             <div class="p-4 text-sm text-zinc-400">Searching for lyrics...</div>
@@ -286,7 +450,6 @@
             </div>
         {:else if lyrics.type === "synced"}
             <div
-                bind:this={lyricsContainer}
                 class="p-4 text-2xl text-white/50 overflow-y-auto flex-1 min-h-0"
             >
                 {#each lyrics.lines as line, index}
