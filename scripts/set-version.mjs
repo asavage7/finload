@@ -5,7 +5,7 @@
 // its version straight from there ("version": "../package.json"), so bundles and
 // the app itself follow automatically. The other two can't reference it:
 // src-tauri/Cargo.toml because Cargo has no way to read a version out of a JSON
-// file, and src-backend/config.py because APP_VERSION goes into the User-Agent
+// file, and src-backend/core/config.py because APP_VERSION goes into the User-Agent
 // and the Jellyfin client version, which the frozen sidecar has to know without
 // the repo around it. Both are rewritten here so they can't drift.
 //
@@ -54,11 +54,11 @@ replaceIn(
 );
 
 replaceIn(
-  join(root, 'src-backend', 'config.py'),
+  join(root, 'src-backend', 'core', 'config.py'),
   /(^APP_VERSION\s*=\s*")[^"]*(")/m,
   'APP_VERSION',
 );
 
 console.log(
-  `Version set to ${version} in package.json, src-tauri/Cargo.toml and src-backend/config.py`,
+  `Version set to ${version} in package.json, src-tauri/Cargo.toml and src-backend/core/config.py`,
 );

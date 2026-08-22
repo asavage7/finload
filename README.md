@@ -49,10 +49,11 @@ However, parts of Finload were created with the help of artificial intelligence.
 - Autoplay toggle does not persist on queue clear
 - Volume normalization does not adjust volume of non-normalized tracks, causing them to be much louder
 - WebKitGTK has different blur rendering than Firefox/Chromium, causing odd blur behaviors. 
+- Some settings toggles are not fully functional.
 
 ## Install
 
-Download finload from the [releases page](https://github.com/asavage7/finload/releases). x64 Linux is the only supported platform at the moment, however Windows and Linux ARM are planned.
+Download finload from the [releases page](https://github.com/asavage7/finload/releases). Linux (x64) is the only supported platform at the moment, however Windows and Linux ARM support are planned.
 
 **Debian / Ubuntu**:
 
@@ -113,7 +114,7 @@ On first launch, the app will take you through an onboarding process. After this
 ## Building
 
 ```bash
-# All three Linux bundles, each with the correct mpv handling (see below)
+# All three Linux bundles
 npm run build:linux
 
 # Or one target at a time
@@ -121,32 +122,8 @@ npm run build:tauri:deb
 npm run build:tauri:rpm
 npm run build:tauri:appimage
 
-# Completed builds land in src-tauri/target/release/bundle/
+# Completed builds can be found at src-tauri/target/release/bundle/
 ```
-
-Builds run PyInstaller over `src-backend/` to produce the sidecar binary, so the venv at `src-backend/.venv` has to exist first (`scripts/setup-dev.sh` creates it). PyInstaller cannot cross-compile, so each platform has to be built on itself.
-
-### How libmpv gets bundled
-
-python-mpv loads `libmpv.so.2` through `ctypes` at runtime rather than linking it, so it never appears as a `DT_NEEDED` entry and neither dpkg's `shlibdeps` nor rpm's soname scanner will find it. Each bundle declares it by hand in `src-tauri/tauri.conf.json`, and the release workflow checks the built packages to confirm the declaration survived.
-
-That leaves the question of whether to ship a copy of mpv too, which the `FINLOAD_TRIM_MPV` environment variable controls:
-
-- **Unset (default)**: the sidecar bundles libmpv and its full GUI/codec closure (X11, Wayland, PulseAudio, video encoders, and so on) at a cost of about 170MB. This is the only variant that works on a machine with no libmpv installed, which is what the AppImage has to assume.
-- **Set to `1`**: that closure is stripped and the app uses the system's `libmpv.so.2`. Only safe for deb and rpm, which declare the dependency.
-
-`npm run build:tauri:deb`, `:rpm` and `:linux-installers` set the variable; the AppImage script and a plain `tauri build` deliberately leave it unset, because a bare `tauri build` produces every bundle target from one compiled sidecar and an AppImage is the one that can't be trimmed.
-
-### Releasing
-
-Version numbers live in `package.json`, `src-tauri/Cargo.toml` and `src-backend/config.py`; `tauri.conf.json` reads its own from `package.json`. One script writes all three:
-
-```bash
-npm run version:set 0.2.0
-git commit -am "Release 0.2.0" && git tag v0.2.0 && git push --follow-tags
-```
-
-Pushing a `v*` tag runs [the release workflow](.github/workflows/release.yml), which stamps the version from the tag, builds all three bundles, verifies the libmpv dependency made it into the deb and rpm, and opens a draft release with checksums attached.
 
 ## License
 
