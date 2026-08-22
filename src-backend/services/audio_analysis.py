@@ -32,9 +32,9 @@ import threading
 import time
 import urllib.request
 
-from background import BackgroundJob
-from config import get_data_dir
-from database import Track, TrackFeatures, db
+from core.config import get_data_dir
+from core.database import Track, TrackFeatures, db
+from services.background import BackgroundJob
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ def _ensure_librosa():
     import sys
     import numpy as np
 
-    import _numba_shim
+    from core import _numba_shim
     # Must precede the first `import librosa` so librosa's `import numba` resolves
     # to the shim. setdefault (not force) so a real numba, if somehow already
     # imported, still wins — the overrides below make both paths identical anyway.
@@ -401,6 +401,8 @@ class AudioFeatureManager(BackgroundJob):
     also survives ``switch_source()`` reassigning it at runtime.
     """
 
+    supports_force = True
+
     def __init__(self, settings, db_manager, provider_getter):
         super().__init__()
         self._settings = settings
@@ -408,7 +410,7 @@ class AudioFeatureManager(BackgroundJob):
         self._get_provider = provider_getter
 
     def start(self, force: bool = False) -> bool:
-        if not self._settings.get("enable_discovery"):
+        if not self._settings.get("enable_radio"):
             return False
         return super().start(force=force)
 
@@ -441,6 +443,20 @@ class AudioFeatureManager(BackgroundJob):
             for track_id, features, error in pool.imap_unordered(
                 _analyze_one, self._resolve_paths(tracks, provider, temp_paths)
             ):
+                if not self._settings.get("enable_radio"):
+                    # Setting turned off mid-run (same gate start() checks) --
+                    # stop rather than keep working on a disabled feature.
+                    # Leaving the `with mp.Pool` block here still lets it
+                    # clean up already-dispatched workers normally.
+                    self._emit(status="idle", message="Stopped — disabled in settings")
+                    return
+                # Note: _resolve_paths submits every remote track's download
+                # to its own thread pool up front, not lazily per iteration,
+                # so a pause here stops new CPU-bound analysis/DB writes from
+                # starting but can't recall downloads already in flight to
+                # Jellyfin for the current batch -- still meaningfully less
+                # concurrent load than letting the whole batch keep going.
+                self.wait_if_paused()
                 temp_path = temp_paths.pop(track_id, None)
                 if temp_path:
                     try:

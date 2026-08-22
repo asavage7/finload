@@ -26,7 +26,7 @@ import mutagen
 from mutagen.flac import Picture
 from PIL import Image
 
-from database import Track
+from core.database import Track
 from .base import MediaProvider
 from .lyrics import NO_LYRICS, fetch_lrclib, parse_lrc
 
@@ -170,6 +170,7 @@ class LocalProvider(MediaProvider):
                 "file_path": path,
                 "provider": "local",
                 "mbid": None,
+                "library_id": self.music_path,
                 # File mtime as a proxy "added to library" time — no better
                 # signal exists for local files (no server to ask). Omitted
                 # entirely rather than set to None on a failed stat, so the

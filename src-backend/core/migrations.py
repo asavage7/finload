@@ -237,7 +237,7 @@ def _migrate_7(db):
     """v6 to v7: Add file_path to track for local provider; backfill from local_index.json."""
     import json
     import os
-    from config import get_data_dir
+    from core.config import get_data_dir
 
     db.execute_sql("ALTER TABLE track ADD COLUMN file_path VARCHAR(255) NOT NULL DEFAULT ''")
 

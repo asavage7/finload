@@ -7,10 +7,18 @@ from collections import Counter, defaultdict
 from fastapi import APIRouter, Body, HTTPException
 from peewee import JOIN, fn
 
-import state
-from database import Album, AlbumGenre, Artist, ArtistGenre, Genre, PlayHistory, Track, TrackLyrics
+from core import state
+from core.database import (Album, AlbumGenre, Artist, ArtistGenre, Genre, PlayHistory, Track,
+                      TrackLyrics, track_scope_clause)
 
 router = APIRouter()
+
+
+def _library_scope():
+    """The current Jellyfin library-selection scope clause, or None when
+    unfiltered — see database.track_scope_clause. Read live so a selection
+    change takes effect on the very next request, no cache to invalidate."""
+    return track_scope_clause(state.settings.get("jellyfin_library_ids"))
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +91,12 @@ def _track_ids_for_genre(genre_id: str, cap: int | None = None) -> list[str]:
     if not album_ids:
         return []
 
+    query = Track.select(Track.id, Track.album, Track.disc_number, Track.track_number).where(Track.album << album_ids)
+    scope = _library_scope()
+    if scope is not None:
+        query = query.where(scope)
     track_ids: list[str] = []
-    for t in Track.select(Track.id, Track.album, Track.disc_number, Track.track_number).where(Track.album << album_ids):
+    for t in query:
         track_ids.append(t.id)
 
     random.shuffle(track_ids)
@@ -150,7 +162,7 @@ def apply_sort_and_page(query, sorts: dict, sort_by: str, sort_order: str,
 
 @router.get("/api/artists/count")
 def get_artists_count():
-    return {"count": Artist.select().count()}
+    return {"count": _artists_with_aggregates().count()}
 
 
 def _serialize_artist_row(a) -> dict:
@@ -175,6 +187,9 @@ def _artists_with_aggregates(where_clause=None, limit: int | None = None, order_
              .join(Album, JOIN.LEFT_OUTER, on=(Album.artist == Artist.id))
              .join(Track, JOIN.LEFT_OUTER, on=(Track.album == Album.id))
              .group_by(Artist.id))
+    scope = _library_scope()
+    if scope is not None:
+        where_clause = scope if where_clause is None else (where_clause & scope)
     if where_clause is not None:
         query = query.where(where_clause)
     if order_by is not None:
@@ -196,7 +211,7 @@ def get_artists(sort_by: str = "name", sort_order: str = "asc",
 
 @router.get("/api/albums/count")
 def get_albums_count():
-    return {"count": Album.select().count()}
+    return {"count": _albums_with_aggregates().count()}
 
 
 def _serialize_album_row(a) -> dict:
@@ -236,6 +251,9 @@ def _tracks_with_relations(where_clause=None, limit: int | None = None):
     """Track query pre-joined with Album and Artist — the shape
     ``_serialize_track_row`` expects."""
     query = Track.select(Track, Album, Artist).join(Album).switch(Track).join(Artist)
+    scope = _library_scope()
+    if scope is not None:
+        where_clause = scope if where_clause is None else (where_clause & scope)
     if where_clause is not None:
         query = query.where(where_clause)
     if limit is not None:
@@ -255,6 +273,9 @@ def _albums_with_aggregates(where_clause=None, limit: int | None = None, order_b
              .switch(Album)
              .join(Track, JOIN.LEFT_OUTER, on=(Track.album == Album.id))
              .group_by(Album.id))
+    scope = _library_scope()
+    if scope is not None:
+        where_clause = scope if where_clause is None else (where_clause & scope)
     if where_clause is not None:
         query = query.where(where_clause)
     if order_by is not None:
@@ -349,13 +370,13 @@ def _appears_on_albums(artist_id: str, cap: int = 20) -> list[dict]:
     also how a "feat. X" credit that Jellyfin resolved to its own artist
     entity surfaces X's contribution, since that entity is never an album's
     ``artist``)."""
-    album_ids = list(
-        Track.select(Track.album)
-        .join(Album, on=(Track.album == Album.id))
-        .where(Track.artist == artist_id, Album.artist != artist_id)
-        .distinct()
-        .scalars()
-    )
+    query = (Track.select(Track.album)
+             .join(Album, on=(Track.album == Album.id))
+             .where(Track.artist == artist_id, Album.artist != artist_id))
+    scope = _library_scope()
+    if scope is not None:
+        query = query.where(scope)
+    album_ids = list(query.distinct().scalars())
     if not album_ids:
         return []
     albums = _albums_with_aggregates(
@@ -444,13 +465,20 @@ def _similar_artists_by_genre(artist_id: str, cap: int = 20) -> list[dict]:
 
 @router.get("/api/tracks/count")
 def get_tracks_count():
-    return {"count": Track.select().count()}
+    query = Track.select()
+    scope = _library_scope()
+    if scope is not None:
+        query = query.where(scope)
+    return {"count": query.count()}
 
 
 @router.get("/api/tracks")
 def get_tracks(sort_by: str = "title", sort_order: str = "asc",
                start_index: int | None = None, end_index: int | None = None):
     tracks = Track.select(Track, Album, Artist).join(Album).join(Artist)
+    scope = _library_scope()
+    if scope is not None:
+        tracks = tracks.where(scope)
     tracks = apply_sort_and_page(tracks, _TRACK_SORTS, sort_by, sort_order,
                                  "title", Track.title.collate("NOCASE"),
                                  start_index, end_index)
@@ -486,9 +514,13 @@ _HERO_CANDIDATE_MAX = 8
 def _recent_play_ids(group_field) -> list[str]:
     """Distinct ids for ``group_field`` (Track.album or Track.artist), most
     recently played first."""
-    rows = list(PlayHistory
-                .select(group_field.alias("eid"), fn.MAX(PlayHistory.played_at).alias("w"))
-                .join(Track, on=(PlayHistory.track == Track.id))
+    query = (PlayHistory
+             .select(group_field.alias("eid"), fn.MAX(PlayHistory.played_at).alias("w"))
+             .join(Track, on=(PlayHistory.track == Track.id)))
+    scope = _library_scope()
+    if scope is not None:
+        query = query.where(scope)
+    rows = list(query
                 .group_by(group_field)
                 .order_by(fn.MAX(PlayHistory.played_at).desc())
                 .limit(_HOME_ROW_LIMIT)
@@ -499,9 +531,12 @@ def _recent_play_ids(group_field) -> list[str]:
 def _recently_added_album_ids(limit: int = _HOME_ROW_LIMIT) -> list[str]:
     """Album ids ordered by MAX(Track.added_at) desc — same grouping shape as
     _recent_play_ids, just off Track.added_at instead of PlayHistory."""
-    rows = list(Track
-                .select(Track.album.alias("eid"), fn.MAX(Track.added_at).alias("w"))
-                .where(Track.added_at.is_null(False))
+    query = Track.select(Track.album.alias("eid"), fn.MAX(Track.added_at).alias("w")).where(
+        Track.added_at.is_null(False))
+    scope = _library_scope()
+    if scope is not None:
+        query = query.where(scope)
+    rows = list(query
                 .group_by(Track.album)
                 .order_by(fn.MAX(Track.added_at).desc(), Track.album)
                 .limit(limit)
@@ -627,7 +662,11 @@ def get_home():
     of suppressing discovery surfaces on libraries too small for them to
     mean anything.
     """
-    total_tracks = Track.select().count()
+    _home_tracks_query = Track.select()
+    _home_scope = _library_scope()
+    if _home_scope is not None:
+        _home_tracks_query = _home_tracks_query.where(_home_scope)
+    total_tracks = _home_tracks_query.count()
 
     recently_played_albums = _serialize_albums_in_order(_recent_play_ids(Track.album))
     recently_played_artists = _serialize_artists_in_order(_recent_play_ids(Track.artist))
@@ -639,7 +678,10 @@ def get_home():
         )
     ]
 
-    random_album_ids = [a.id for a in Album.select(Album.id).order_by(fn.Random()).limit(_HOME_ROW_LIMIT)]
+    random_albums_query = Album.select(Album.id)
+    if _home_scope is not None:
+        random_albums_query = random_albums_query.join(Track, JOIN.LEFT_OUTER).where(_home_scope).distinct()
+    random_album_ids = [a.id for a in random_albums_query.order_by(fn.Random()).limit(_HOME_ROW_LIMIT)]
     random_albums = _serialize_albums_in_order(random_album_ids)
 
     # ---- affinity pools (gated on library size) ----
@@ -760,8 +802,11 @@ def get_album_details(album_id: str):
 
     tracks_query = (Track.select(Track, Artist)
                     .join(Artist, on=(Track.artist == Artist.id))
-                    .where(Track.album == album_id)
-                    .order_by(Track.disc_number, Track.track_number))
+                    .where(Track.album == album_id))
+    scope = _library_scope()
+    if scope is not None:
+        tracks_query = tracks_query.where(scope)
+    tracks_query = tracks_query.order_by(Track.disc_number, Track.track_number)
 
     discs_map = defaultdict(list)
     for t in tracks_query:
@@ -797,8 +842,11 @@ def get_album_details(album_id: str):
 def get_album_tracks(album_id: str):
     tracks = (Track.select(Track, Artist)
               .join(Artist, on=(Track.artist == Artist.id))
-              .where(Track.album == album_id)
-              .order_by(Track.disc_number, Track.track_number))
+              .where(Track.album == album_id))
+    scope = _library_scope()
+    if scope is not None:
+        tracks = tracks.where(scope)
+    tracks = tracks.order_by(Track.disc_number, Track.track_number)
     return [
         {
             "id": t.id,
@@ -819,23 +867,22 @@ def get_artist_details(artist_id: str):
     if not artist:
         raise HTTPException(status_code=404, detail="Artist not found")
 
-    artist_albums = list(Album.select().where(Album.artist == artist.id).order_by(Album.release_year.desc()))
-    album_ids = [a.id for a in artist_albums]
+    # Routed through the scoped builder (not a raw Album.select()) so an
+    # album with zero remaining in-scope tracks drops out here the same way
+    # it does everywhere else -- it also gives each album its total_ms for
+    # free, so no separate duration query is needed.
+    artist_albums = list(_albums_with_aggregates(
+        where_clause=(Album.artist == artist.id), order_by=Album.release_year.desc()
+    ))
 
-    # Per-album duration (whole album, for the album cards below) — distinct
-    # from the artist-wide total, which needs every track actually credited
-    # to this artist, including ones on albums they don't own (features,
-    # compilation appearances).
-    duration_map = {
-        row.album: row.total
-        for row in Track.select(Track.album, fn.SUM(Track.duration_ms).alias("total"))
-                        .where(Track.album << album_ids)
-                        .group_by(Track.album)
-                        .namedtuples()
-    } if album_ids else {}
-
-    tracks_count = Track.select(fn.COUNT(Track.id)).where(Track.artist == artist.id).scalar() or 0
-    total_duration_ms = Track.select(fn.SUM(Track.duration_ms)).where(Track.artist == artist.id).scalar() or 0
+    scope = _library_scope()
+    tracks_count_query = Track.select(fn.COUNT(Track.id)).where(Track.artist == artist.id)
+    total_duration_query = Track.select(fn.SUM(Track.duration_ms)).where(Track.artist == artist.id)
+    if scope is not None:
+        tracks_count_query = tracks_count_query.where(scope)
+        total_duration_query = total_duration_query.where(scope)
+    tracks_count = tracks_count_query.scalar() or 0
+    total_duration_ms = total_duration_query.scalar() or 0
 
     return {
         "artist": {
@@ -851,7 +898,7 @@ def get_artist_details(artist_id: str):
             {
                 "id": str(a.id),
                 "title": str(a.title),
-                "duration_ms": duration_map.get(a.id, 0),
+                "duration_ms": a.total_ms or 0,
                 "release_year": a.release_year,
                 "rating": a.rating,
             }
@@ -869,8 +916,11 @@ def get_artist_tracks(artist_id: str):
         raise HTTPException(status_code=404, detail="Artist not found")
     tracks = (Track.select(Track, Album, Artist)
               .join(Album).switch(Track).join(Artist)
-              .where(Track.artist == artist.id)
-              .order_by(Album.release_year, Track.disc_number, Track.track_number))
+              .where(Track.artist == artist.id))
+    scope = _library_scope()
+    if scope is not None:
+        tracks = tracks.where(scope)
+    tracks = tracks.order_by(Album.release_year, Track.disc_number, Track.track_number)
     return [
         {
             "id": t.id,
@@ -921,14 +971,7 @@ def get_genre_details(genre_id: str):
     } if album_ids else {}
 
     artists_by_id = {
-        a.id: a for a in
-        (Artist.select(Artist,
-                        fn.COUNT(Album.id.distinct()).alias("album_count"),
-                        fn.SUM(Track.duration_ms).alias("total_ms"))
-         .join(Album, JOIN.LEFT_OUTER, on=(Album.artist == Artist.id))
-         .join(Track, JOIN.LEFT_OUTER, on=(Track.album == Album.id))
-         .where(Artist.id << artist_ids)
-         .group_by(Artist.id))
+        a.id: a for a in _artists_with_aggregates(where_clause=(Artist.id << artist_ids))
     } if artist_ids else {}
 
     tracks_by_id = {

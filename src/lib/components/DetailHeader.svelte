@@ -41,7 +41,7 @@
   <BackButton class="absolute top-4 left-4 z-20" />
 
   <div
-    class="relative z-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-full max-w-[var(--8xl)] mx-auto pb-8 md:px-6 border-b border-white/10"
+    class="relative z-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-full max-w-[var(--8xl)] mx-auto pb-8 md:pr-6 border-b border-white/10"
   >
     {#if $$slots.cover}
       <div class="w-full px-8 md:w-auto md:p-0">

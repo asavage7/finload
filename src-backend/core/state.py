@@ -5,14 +5,14 @@ sync, metadata) live here. Modules must access them as ``state.provider`` /
 ``state.playback`` attribute lookups rather than ``from state import provider``,
 because switching the library source replaces some of them at runtime.
 """
-from audio_analysis import AudioFeatureManager
-from database import DatabaseManager, switch_database
-from genre_enrichment import GenreEnrichmentManager
-from metadata_manager import MetadataManager
-from playback_manager import PlaybackManager
+from core.database import DatabaseManager, switch_database
 from providers import create_provider
-from settings_manager import SettingsManager
-from sync_manager import SyncManager
+from services.audio_analysis import AudioFeatureManager
+from services.genre_enrichment import GenreEnrichmentManager
+from services.metadata_manager import MetadataManager
+from services.playback_manager import PlaybackManager
+from services.settings_manager import SettingsManager
+from services.sync_manager import SyncManager
 
 settings = SettingsManager()
 db = DatabaseManager()

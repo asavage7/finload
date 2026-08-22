@@ -137,9 +137,15 @@ jobs:
           draft: true
           generate_release_notes: true
           body: |
+            [Short description]
+
+            ## Changelog
+
+            - [Add changelog here]
+
             ## Install
 
-            **Debian / Ubuntu** (24.04 or newer — needs `libmpv2`)
+            **Debian / Ubuntu** (2024 or newer)
             ```
             sudo apt install ./finload_${{ steps.version.outputs.version }}_amd64.deb
             ```
@@ -149,10 +155,8 @@ jobs:
             sudo dnf install ./finload-${{ steps.version.outputs.version }}-1.x86_64.rpm
             ```
 
-            **Any distro** — the AppImage bundles its own mpv, so it needs nothing installed:
+            **Appimage**
             ```
             chmod +x finload_${{ steps.version.outputs.version }}_amd64.AppImage
             ./finload_${{ steps.version.outputs.version }}_amd64.AppImage
             ```
-
-            Verify downloads against `SHA256SUMS.txt`.

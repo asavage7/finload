@@ -1,4 +1,5 @@
 <script lang="ts">
+    import Modal from "./Modal.svelte";
     import { apiUrl } from "$lib/backend";
     import { playlistCoverTimestamps } from "$lib/store";
     import { IconCamera } from "@tabler/icons-svelte";
@@ -86,67 +87,57 @@
         onCancel();
     }
 
-    function handleBackdrop(e: MouseEvent) {
-        if (e.target === e.currentTarget) handleCancel();
-    }
 </script>
 
-{#if open}
+<Modal
+    {open}
+    onClose={handleCancel}
+    panelClass="bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl p-4 w-full max-w-md mx-8 flex flex-col md:flex-row items-center gap-6"
+>
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm"
-        on:click={handleBackdrop}
+        class="relative w-36 h-36 rounded-lg shadow-2xl border border-white/10 overflow-hidden bg-zinc-800 flex items-center justify-center group/cover cursor-pointer shrink-0"
+        on:click={handleImageClick}
     >
-        <div
-            class="bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl p-4 w-full max-w-md mx-8 flex flex-col md:flex-row items-center gap-6"
-        >
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-                class="relative w-36 h-36 rounded-lg shadow-2xl border border-white/10 overflow-hidden bg-zinc-800 flex items-center justify-center group/cover cursor-pointer shrink-0"
-                on:click={handleImageClick}
-            >
-                {#if imagePreviewUrl}
-                    <img src={imagePreviewUrl} alt="" class="w-full h-full object-cover" />
-                {:else}
-                    <PlaylistCover playlistId={edit ? playlist?.id ?? "" : ""} name={name || ""} size={142} />
-                {/if}
-                <div class="absolute inset-0 flex items-center justify-center opacity-0 group-hover/cover:opacity-100 transition-opacity duration-200 bg-black/50">
-                    <IconCamera size={28} class="text-white" />
-                </div>
-            </div>
-
-            <div class="flex flex-col gap-4 w-full flex-1 justify-center md:justify-start">
-                <div class="w-full">
-                    <h2 class="text-lg font-bold text-white mb-3 text-center md:text-left">
-                        {edit ? "Edit Playlist" : "New Playlist"}
-                    </h2>
-                    <input
-                        class="w-full bg-zinc-800 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder-zinc-500 outline-none focus:border-white/30"
-                        placeholder="Playlist name…"
-                        bind:value={name}
-                        on:keydown={(e) => e.key === "Enter" && handleSubmit()}
-                        use:focusOnMount
-                    />
-                </div>
-
-                <div class="flex gap-3 justify-end w-full">
-                    <button
-                        on:click={handleCancel}
-                        class="px-4 py-2 rounded-full text-sm font-semibold text-white hover:bg-white/5 transition border border-white/10"
-                    >
-                        Cancel
-                    </button>
-                    <button
-                        on:click={handleSubmit}
-                        class="px-4 py-1.5 rounded-full text-sm font-semibold text-white bg-blue-500 hover:bg-blue-400 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed transition shrink-0"
-                        disabled={!name.trim()}
-                    >
-                        {edit ? "Save" : "Create"}
-                    </button>
-                </div>
-            </div>
+        {#if imagePreviewUrl}
+            <img src={imagePreviewUrl} alt="" class="w-full h-full object-cover" />
+        {:else}
+            <PlaylistCover playlistId={edit ? playlist?.id ?? "" : ""} name={name || ""} size={142} />
+        {/if}
+        <div class="absolute inset-0 flex items-center justify-center opacity-0 group-hover/cover:opacity-100 transition-opacity duration-200 bg-black/50">
+            <IconCamera size={28} class="text-white" />
         </div>
     </div>
-{/if}
+
+    <div class="flex flex-col gap-4 w-full flex-1 justify-center md:justify-start">
+        <div class="w-full">
+            <h2 class="text-lg font-bold text-white mb-3 text-center md:text-left">
+                {edit ? "Edit Playlist" : "New Playlist"}
+            </h2>
+            <input
+                class="w-full bg-zinc-800 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder-zinc-500 outline-none focus:border-white/30"
+                placeholder="Playlist name…"
+                bind:value={name}
+                on:keydown={(e) => e.key === "Enter" && handleSubmit()}
+                use:focusOnMount
+            />
+        </div>
+
+        <div class="flex gap-3 justify-end w-full">
+            <button
+                on:click={handleCancel}
+                class="px-4 py-2 rounded-full text-sm font-semibold text-white hover:bg-white/5 transition border border-white/10"
+            >
+                Cancel
+            </button>
+            <button
+                on:click={handleSubmit}
+                class="px-4 py-1.5 rounded-full text-sm font-semibold text-white bg-blue-500 hover:bg-blue-400 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed transition shrink-0"
+                disabled={!name.trim()}
+            >
+                {edit ? "Save" : "Create"}
+            </button>
+        </div>
+    </div>
+</Modal>

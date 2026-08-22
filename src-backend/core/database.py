@@ -14,8 +14,8 @@ from peewee import (
 import datetime
 import json
 import os
-from config import get_database_path
-from migrations import SCHEMA_VERSION, ensure_model_columns, run_migrations, stable_genre_id
+from core.config import get_database_path
+from core.migrations import SCHEMA_VERSION, ensure_model_columns, run_migrations, stable_genre_id
 
 # WAL mode lets API reads proceed while a library sync writes, avoiding "database
 # is locked" stalls during sync — but that only works if each thread has its own
@@ -23,7 +23,15 @@ from migrations import SCHEMA_VERSION, ensure_model_columns, run_migrations, sta
 # request thread onto one shared sqlite3.Connection with no locking, which is
 # unsafe: concurrent queries on it can return wrong/missing rows or raise
 # "bad parameter or other API misuse".
-_DB_PRAGMAS = {'foreign_keys': 1, 'journal_mode': 'wal'}
+#
+# busy_timeout makes a writer that finds the DB locked retry for up to this
+# long (ms) instead of raising OperationalError("database is locked")
+# immediately — needed because sync/genre_enrichment/metadata/audio_features
+# all run as concurrent background threads, each its own connection (see
+# above), and can genuinely contend for the single SQLite writer lock at the
+# same time. Peewee's own default connection timeout is only 5s, too short
+# for that to reliably ride out under real contention.
+_DB_PRAGMAS = {'foreign_keys': 1, 'journal_mode': 'wal', 'busy_timeout': 30000}
 
 db = SqliteDatabase(
     str(get_database_path()),
@@ -80,6 +88,12 @@ class Track(BaseModel):
     file_path = CharField(default="")  # absolute path on disk; only set for provider="local"
     provider = CharField(default="jellyfin")
     mbid = CharField(null=True)  # MusicBrainz Recording ID
+    # Which library this track belongs to: a Jellyfin View (library) UUID for
+    # provider="jellyfin", or the configured local_music_path root for
+    # provider="local" (not yet used for filtering there). Lets a Jellyfin
+    # library be scoped in/out of sync without deleting anything — see
+    # track_scope_clause below.
+    library_id = CharField(null=True)
     # First-seen time, powering "Recently Added". No Python-level default:
     # the column's SQL-level DEFAULT CURRENT_TIMESTAMP (added in _migrate_14)
     # is what makes this populate correctly on insert while staying excluded
@@ -94,8 +108,24 @@ class Track(BaseModel):
 _TRACK_PRESERVE_ON_CONFLICT = [
     Track.title, Track.artist, Track.album, Track.track_number,
     Track.disc_number, Track.duration_ms, Track.file_path,
-    Track.provider, Track.mbid,
+    Track.provider, Track.mbid, Track.library_id,
 ]
+
+
+def track_scope_clause(selected_library_ids):
+    """A ``.where()`` expression scoping Track queries to a Jellyfin library
+    selection, or ``None`` when unfiltered (empty/unset selection).
+
+    Every non-Jellyfin track is always in scope; a Jellyfin track is only in
+    scope if its library_id is one of the selected ones. Used both by sync
+    (so an out-of-selection track is never mistaken for one deleted on the
+    server — see SyncManager._run) and by every browse/discovery query, so a
+    deselected library's tracks disappear without their rows, or anything
+    FK'd to them (features, lyrics, genre links), ever being deleted.
+    """
+    if not selected_library_ids:
+        return None
+    return (Track.provider != "jellyfin") | (Track.library_id.in_(selected_library_ids))
 
 
 class Genre(BaseModel):
@@ -387,7 +417,7 @@ class DatabaseManager:
 
     def save_track_features(self, track_id: str, bpm: float, mfcc_mean: list,
                              mfcc_std: list, contrast_mean: list) -> None:
-        from audio_analysis import FEATURE_VERSION
+        from services.audio_analysis import FEATURE_VERSION
         TrackFeatures.insert(
             track=track_id, bpm=bpm, feature_version=FEATURE_VERSION,
             features=json.dumps({"mfcc_mean": mfcc_mean, "mfcc_std": mfcc_std,

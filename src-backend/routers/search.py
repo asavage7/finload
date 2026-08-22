@@ -3,9 +3,10 @@ import datetime
 import re
 
 from fastapi import APIRouter
-from peewee import fn
+from peewee import JOIN, fn
 
-from database import Album, Artist, SearchHistory, Track, db as peewee_db
+from core import state
+from core.database import Album, Artist, SearchHistory, Track, db as peewee_db, track_scope_clause
 
 router = APIRouter()
 
@@ -124,10 +125,14 @@ def search(q: str = "", limit: int = 5):
     limit = max(1, min(limit, 20))
     tokens = q.split()
     scored: list[tuple[int, dict]] = []
+    scope = track_scope_clause(state.settings.get("jellyfin_library_ids"))
 
     artists = (Artist.select()
-               .where(_match_all_tokens([Artist.name], tokens))
-               .limit(_SEARCH_CANDIDATES))
+               .join(Track, JOIN.LEFT_OUTER, on=(Track.artist == Artist.id))
+               .where(_match_all_tokens([Artist.name], tokens)))
+    if scope is not None:
+        artists = artists.where(scope)
+    artists = artists.distinct().limit(_SEARCH_CANDIDATES)
     for a in artists:
         s = _search_score(a.name, q, tokens)
         if s > 0:
@@ -140,9 +145,12 @@ def search(q: str = "", limit: int = 5):
                 "album_id": None,
             }))
 
-    albums = (Album.select(Album, Artist).join(Artist)
-              .where(_match_all_tokens([Album.title, Artist.name], tokens))
-              .limit(_SEARCH_CANDIDATES))
+    albums = (Album.select(Album, Artist).join(Artist).switch(Album)
+              .join(Track, JOIN.LEFT_OUTER, on=(Track.album == Album.id))
+              .where(_match_all_tokens([Album.title, Artist.name], tokens)))
+    if scope is not None:
+        albums = albums.where(scope)
+    albums = albums.distinct().limit(_SEARCH_CANDIDATES)
     for al in albums:
         s = _item_score(al.title, al.artist.name, q, tokens)
         if s > 0:
@@ -156,8 +164,10 @@ def search(q: str = "", limit: int = 5):
             }))
 
     tracks = (Track.select(Track, Album, Artist).join(Album).join(Artist)
-              .where(_match_all_tokens([Track.title, Artist.name], tokens))
-              .limit(_SEARCH_CANDIDATES))
+              .where(_match_all_tokens([Track.title, Artist.name], tokens)))
+    if scope is not None:
+        tracks = tracks.where(scope)
+    tracks = tracks.limit(_SEARCH_CANDIDATES)
     for t in tracks:
         s = _item_score(t.title, t.artist.name, q, tokens)
         if s > 0:

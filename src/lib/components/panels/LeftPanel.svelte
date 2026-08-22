@@ -136,12 +136,11 @@
 <div class="flex flex-col h-full w-full p-2 gap-2">
     <!-- Header: condense toggle -->
     <div
-        class="flex items-center {condensed
-            ? 'justify-center'
-            : 'justify-between'} px-1 h-9 shrink-0"
+        class="flex items-center justify-center px-1 h-9 shrink-0"
     >
         {#if !condensed}
-            <span class="font-bold text-md text-white/90 pl-1">Finload</span>
+        <img src="favicon.png" alt="Finload" class="h-6 w-auto" />
+            <span class="font-bold text-md text-white/90 pl-3 w-full">Finload</span>
         {/if}
         <IconButton
             white

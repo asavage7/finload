@@ -24,9 +24,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from background import BackgroundJob
-from config import USER_AGENT
-from database import Album, Artist, Track
+from core.config import USER_AGENT
+from core.database import Album, Artist, Track
+from services.background import BackgroundJob
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +198,8 @@ def _mb_genres(entity_type: str, mbid: str) -> list[tuple[str, int]]:
 
 
 class GenreEnrichmentManager(BackgroundJob):
+    supports_force = True
+
     def __init__(self, settings, db_manager):
         super().__init__()
         self._settings = settings
@@ -226,7 +228,23 @@ class GenreEnrichmentManager(BackgroundJob):
         self._emit(total=len(albums), message="Gathering albums to enrich…")
 
         for processed, album in enumerate(albums, start=1):
-            self._enrich_album(album, api_key)
+            if not self._settings.get("enable_genre_enrichment"):
+                # Setting turned off mid-run (same gate start() checks, and
+                # the schema's task row is disabled on) -- stop rather than
+                # keep working on a feature the user just turned off.
+                self._emit(status="idle", message="Stopped — disabled in settings")
+                return
+            self.wait_if_paused()
+            try:
+                self._enrich_album(album, api_key)
+            except Exception as e:
+                # One album's lookup/write failing (e.g. a transient SQLite
+                # "database is locked" under concurrent sync/enrichment
+                # writes) shouldn't abort enrichment for every album still
+                # queued behind it -- skip it and keep going; it's simply
+                # not in _enriched_album_ids() yet, so the next non-forced
+                # run retries it same as any other not-yet-enriched album.
+                logger.warning("Genre enrichment failed for album %s: %s", album.id, e)
             self._emit(processed=processed, message=f"Enriching genres: {album.title}")
 
         self._emit(status="complete", message=f"Enriched genres for {len(albums)} albums")
@@ -234,7 +252,7 @@ class GenreEnrichmentManager(BackgroundJob):
     @staticmethod
     def _enriched_album_ids() -> set:
         """Albums that already have at least one musicbrainz/lastfm genre link."""
-        from database import AlbumGenre
+        from core.database import AlbumGenre
         rows = (AlbumGenre
                 .select(AlbumGenre.album)
                 .where(AlbumGenre.source << ("musicbrainz", "lastfm"))

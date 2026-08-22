@@ -1,6 +1,6 @@
 [package]
 name = "finload"
-version = "0.1.1"
+version = "0.1.2"
 description = "Finload desktop shell"
 authors = ["Finload contributors"]
 edition = "2021"

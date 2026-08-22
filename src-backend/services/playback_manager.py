@@ -1,11 +1,11 @@
 import mpv
-from database import Track, Album, Artist, QueueItem, PlaybackState, PlayHistory, db, _chunks
+from core.database import Track, Album, Artist, QueueItem, PlaybackState, PlayHistory, db, _chunks
 import datetime
 import random
 import threading
 import traceback
 
-import radio
+from services import radio
 
 
 class PlaybackManager:
@@ -556,7 +556,8 @@ class PlaybackManager:
         asking for one track -- plays its first entry immediately, and
         queues the rest.
         """
-        track_ids = radio.generate_batch(reference_track_id, [], set(), extra_seed_ids=extra_seed_ids)
+        track_ids = radio.generate_batch(reference_track_id, [], set(), extra_seed_ids=extra_seed_ids,
+                                          library_ids=self.settings.get("jellyfin_library_ids"))
         if not track_ids:
             # No usable recommendations (e.g. no cached audio features yet)
             # -- fall back to just playing the reference track directly.
@@ -640,7 +641,8 @@ class PlaybackManager:
         try:
             new_ids = radio.generate_batch(seed_id, context, exclude_ids,
                                             feedback=feedback, manual_ids=manual_ids,
-                                            elapsed_ms=elapsed_ms, reroll=reroll)
+                                            elapsed_ms=elapsed_ms, reroll=reroll,
+                                            library_ids=self.settings.get("jellyfin_library_ids"))
         except Exception:
             traceback.print_exc()  # a dead radio should at least say why it died
             return

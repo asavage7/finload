@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
 import { playerState, type PlayerState } from '$lib/store';
-import { onPlayerStatePatch } from '$lib/utils/store';
+import { onPlayerStatePatch } from '$lib/utils/playerStatePatch';
 import { dispatch } from '$lib/utils/playback';
 import { getAbsoluteImageUrl } from '$lib/utils/media';
 

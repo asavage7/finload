@@ -7,7 +7,7 @@ via a job's progress state.
 """
 from fastapi import APIRouter
 
-import state
+from core import state
 
 router = APIRouter()
 
