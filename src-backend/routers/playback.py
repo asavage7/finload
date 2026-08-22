@@ -4,11 +4,15 @@ import random
 
 from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconnect
 
-import state
-import radio
-from database import Album, Artist, Playlist, PlaylistTrack, QueueItem, Track
+from core import state
+from core.database import Album, Artist, Playlist, PlaylistTrack, QueueItem, Track, track_scope_clause
+from services import radio
 
 router = APIRouter()
+
+
+def _library_scope():
+    return track_scope_clause(state.settings.get("jellyfin_library_ids"))
 
 
 @router.post("/api/playback/play_track/{track_id}")
@@ -22,7 +26,11 @@ def play_album(album_id: str, track_id: str | None = None, shuffle: bool = False
     album = Album.get_or_none(Album.id == album_id)
     if not album:
         raise HTTPException(status_code=404, detail="Album not found")
-    album_tracks = list(Track.select().where(Track.album == album_id).order_by(Track.disc_number, Track.track_number))
+    album_query = Track.select().where(Track.album == album_id)
+    scope = _library_scope()
+    if scope is not None:
+        album_query = album_query.where(scope)
+    album_tracks = list(album_query.order_by(Track.disc_number, Track.track_number))
     track_ids = [t.id for t in album_tracks]
     if shuffle:
         random.shuffle(track_ids)
@@ -40,8 +48,11 @@ def play_artist(artist_id: str, track_id: str | None = None, shuffle: bool = Fal
         raise HTTPException(status_code=404, detail="Artist not found")
     artist_tracks = (Track.select()
                      .join(Album)
-                     .where(Track.artist == artist.id)
-                     .order_by(Album.release_year, Track.disc_number, Track.track_number))
+                     .where(Track.artist == artist.id))
+    scope = _library_scope()
+    if scope is not None:
+        artist_tracks = artist_tracks.where(scope)
+    artist_tracks = artist_tracks.order_by(Album.release_year, Track.disc_number, Track.track_number)
     track_ids = [t.id for t in artist_tracks]
     if not track_ids:
         raise HTTPException(status_code=404, detail="Artist has no tracks")
@@ -98,7 +109,7 @@ def start_radio_album(album_id: str):
     album = Album.get_or_none(Album.id == album_id)
     if not album:
         raise HTTPException(status_code=404, detail="Album not found")
-    seed_ids = radio.pick_seed_tracks("album", album_id)
+    seed_ids = radio.pick_seed_tracks("album", album_id, library_ids=state.settings.get("jellyfin_library_ids"))
     if not seed_ids:
         raise HTTPException(status_code=404, detail="Album has no tracks")
     try:
@@ -113,7 +124,7 @@ def start_radio_artist(artist_id: str):
     artist = Artist.get_or_none(Artist.id == artist_id)
     if not artist:
         raise HTTPException(status_code=404, detail="Artist not found")
-    seed_ids = radio.pick_seed_tracks("artist", artist_id)
+    seed_ids = radio.pick_seed_tracks("artist", artist_id, library_ids=state.settings.get("jellyfin_library_ids"))
     if not seed_ids:
         raise HTTPException(status_code=404, detail="Artist has no tracks")
     try:

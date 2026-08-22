@@ -5,8 +5,8 @@ import threading
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-import state
-from database import Track, db as peewee_db
+from core import state
+from core.database import Track, db as peewee_db
 
 router = APIRouter()
 

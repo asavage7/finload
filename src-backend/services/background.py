@@ -16,9 +16,19 @@ class BackgroundJob:
     # common status/message/processed/total (e.g. SyncManager's "added").
     EXTRA_STATE: dict = {}
 
+    # Whether this job's start() accepts a force flag to widen its unit of
+    # work (re-process everything, not just what's unprocessed). Exposed via
+    # /api/jobs so the frontend knows whether to offer a "re-run all" action.
+    supports_force: bool = False
+
     def __init__(self):
         self.listeners = []
         self._lock = threading.Lock()
+        # Set = free to run, cleared = paused. Lets one job (sync) tell
+        # others to idle rather than run concurrently with it -- see
+        # pause()/resume()/wait_if_paused().
+        self._pause_event = threading.Event()
+        self._pause_event.set()
         self.state = {
             "status": "idle",   # idle | running | complete | error
             "message": "",
@@ -30,6 +40,24 @@ class BackgroundJob:
     @property
     def is_running(self) -> bool:
         return self.state["status"] == "running"
+
+    # --- cooperative pause -------------------------------------------------
+    # No hard cancellation exists for a running job (see _run_wrapper) -- this
+    # is a softer "yield to someone with priority" signal a long-running job
+    # opts into by calling wait_if_paused() between work items, so a pause
+    # only ever lands at a clean item boundary rather than mid-item.
+    def pause(self):
+        self._pause_event.clear()
+
+    def resume(self):
+        self._pause_event.set()
+
+    def wait_if_paused(self):
+        """Call between work items in a long-running _run loop. Blocks here
+        for as long as another job holds this one paused."""
+        if not self._pause_event.is_set():
+            self._emit(message="Paused for library sync…")
+            self._pause_event.wait()
 
     # --- listeners -----------------------------------------------------
     def add_listener(self, callback):

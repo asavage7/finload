@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 from peewee import JOIN, fn
 
-from database import Artist, Album, Playlist, PlaylistTrack, Track, db as peewee_db
+from core.database import Artist, Album, Playlist, PlaylistTrack, Track, db as peewee_db
 from routers import accent_colors
 from routers.images import playlist_image_path
 from routers.library import apply_sort_and_page

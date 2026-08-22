@@ -11,7 +11,7 @@ import re
 import urllib.parse
 import urllib.request
 
-from config import USER_AGENT
+from core.config import USER_AGENT
 
 _REQUEST_TIMEOUT = 5
 

@@ -35,9 +35,9 @@
   ></div>
 </div>
 
-{#if syncState.status === "error"}
-  <div class="flex gap-3 mt-4">
-    <StepButton on:click={onBack}>Back to configuration</StepButton>
+<div class="flex gap-3 mt-4">
+  <StepButton on:click={onBack}>Back to configuration</StepButton>
+  {#if syncState.status === "error"}
     <StepButton variant="primary" on:click={onRetry}>Retry sync</StepButton>
-  </div>
-{/if}
+  {/if}
+</div>

@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from config import get_data_dir
+from core.config import get_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +21,26 @@ class SettingsManager:
             "jellyfin_url": "",
             "jellyfin_username": "",
             "jellyfin_password": "",
+            # Which Jellyfin libraries (Views) to sync from and browse.
+            # Empty means unfiltered -- sync/show everything, same as before
+            # this existed. jellyfin_library_ids is what browsing filters by
+            # right now; jellyfin_library_ids_pending (None = no change in
+            # flight) is a newly-saved selection sync is still backfilling
+            # library_id for -- see routers/settings.py's select endpoint
+            # and SyncManager._run. Kept separate so changing the selection
+            # never makes the library look empty mid-resync: browsing keeps
+            # showing the old selection's results until the new one's
+            # backfill sync actually succeeds, at which point sync flips
+            # jellyfin_library_ids to match and clears this.
+            "jellyfin_library_ids": [],
+            "jellyfin_library_ids_pending": None,
             "local_music_path": "",
             # Incremental-sync checkpoints, one per source — not user-editable,
             # written by SyncManager after each successful sync.
             "last_synced_at_jellyfin": "",
             "last_synced_at_local": "",
             "use_album_art_for_tracks": True,
-            "mpv_buffer_size": "25M",
+            "mpv_buffer_size": "10M",
             "enable_replay_gain": False,
             "replay_gain_mode": "auto",
             "enable_lrclib_lyrics": True,
@@ -36,9 +49,13 @@ class SettingsManager:
             "theaudiodb_api_key": "123",
             "enable_genre_enrichment": True,
             "lastfm_api_key": "",
-            "enable_discovery": True,
-            "enable_online_discovery": True,
-            "enable_telemetry": False,
+            "enable_radio": True,
+            "autoplay_default": False,
+            "autoplay_queue_length": 3,
+            # Jellyfin-only; see providers/jellyfin.py's _transcode_preference.
+            "enable_transcoding": False,
+            "transcode_format": "mp3",
+            "transcode_bitrate": "192000",
         }
         self.settings = self._load()
         self._listeners = []

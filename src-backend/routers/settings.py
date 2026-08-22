@@ -1,7 +1,7 @@
 """Settings routes and the Jellyfin connection test."""
 from fastapi import APIRouter, Body
 
-import state
+from core import state
 from providers.jellyfin import test_connection as test_jellyfin_connection_impl
 
 router = APIRouter()
@@ -35,3 +35,23 @@ def test_jellyfin_connection(data: dict = Body(...)):
     if not (url and username and password):
         return {"ok": False, "message": "All three fields are required"}
     return test_jellyfin_connection_impl(url, username, password)
+
+
+@router.get("/api/jellyfin/libraries")
+def get_jellyfin_libraries():
+    return state.provider.fetch_libraries()
+
+
+@router.post("/api/jellyfin/libraries/select")
+def select_jellyfin_libraries(data: dict = Body(...)):
+    library_ids = data.get("library_ids") or []
+    # Staged as "pending", not applied immediately: browsing keeps showing
+    # the current selection's results until the forced resync below actually
+    # backfills library_id for the new one and SyncManager promotes it to
+    # applied on success -- otherwise every already-known track would look
+    # filtered-out (empty albums) for the entire backfill window. See
+    # settings_manager.py's jellyfin_library_ids_pending default.
+    state.settings.set({"jellyfin_library_ids_pending": library_ids})
+
+    started = state.jobs["sync"].start(state.provider, force=True)
+    return {"ok": True, "resync_started": started}

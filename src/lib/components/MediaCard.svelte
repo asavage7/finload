@@ -110,7 +110,7 @@
     </CoverImage>
   {/if}
 
-  <div class="my-1 mx-2 {type === 'artist' ? 'text-center' : 'text-left'}">
+  <div class="mx-0.5 mb-1 {type === 'artist' ? 'text-center' : 'text-left'}">
     <div class="font-bold truncate w-full text-sm text-white">
       {title || "Unknown"}
     </div>

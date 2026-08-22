@@ -1,13 +1,74 @@
 {
   "sections": [
     {
+      "id": "setup",
+      "label": "Setup",
+      "settings": [
+        {
+          "key": "rerun_setup",
+          "control": "action",
+          "action": "rerun_setup",
+          "label": "Re-run setup wizard",
+          "description": "Reconfigure your library source from scratch.",
+          "buttonLabel": "Re-run setup"
+        }
+      ]
+    },
+    {
+      "id": "tasks",
+      "label": "Tasks",
+      "settings": [
+        {
+          "key": "sync",
+          "control": "task",
+          "job": "sync",
+          "label": "Library Sync"
+        },
+        {
+          "key": "audio_features",
+          "control": "task",
+          "job": "audio_features",
+          "label": "Audio Analysis",
+          "description": "Extract audio features from tracks for autoplay.",
+          "enabledIf": {
+            "key": "enable_radio",
+            "value": true
+          },
+          "disabledReason": "Turn on Radio in settings to analyze audio."
+        },
+        {
+          "key": "genre_enrichment",
+          "control": "task",
+          "job": "genre_enrichment",
+          "label": "Genre matching",
+          "description": "Look up genres for your albums and artists from MusicBrainz and Last.fm.",
+          "enabledIf": {
+            "key": "enable_genre_enrichment",
+            "value": true
+          },
+          "disabledReason": "Turn on genre enrichment in settings."
+        },
+        {
+          "key": "metadata",
+          "control": "task",
+          "job": "metadata",
+          "label": "Artist info",
+          "description": "Fetch artist bios and images.",
+          "enabledIf": {
+            "key": "enable_online_metadata",
+            "value": true
+          },
+          "disabledReason": "Turn on online metadata in settings."
+        }
+      ]
+    },
+    {
       "id": "library",
       "label": "Library",
       "settings": [
         {
           "key": "library_source",
-          "label": "Library source",
-          "description": "Where your music comes from",
+          "label": "Library Source",
           "control": "select",
           "options": [
             {
@@ -23,7 +84,7 @@
         {
           "key": "jellyfin_url",
           "label": "Jellyfin URL",
-          "description": "Base URL of your Jellyfin server (e.g. https://jellyfin.myserver.com or http://192.168.1.100:8096)",
+          "description": "Base URL of your Jellyfin server, including http://",
           "control": "text",
           "placeholder": "http://192.168.1.100:8096",
           "showIf": {
@@ -33,8 +94,7 @@
         },
         {
           "key": "jellyfin_username",
-          "label": "Jellyfin username",
-          "description": "Your Jellyfin account username",
+          "label": "Username",
           "control": "text",
           "placeholder": "username",
           "showIf": {
@@ -44,8 +104,7 @@
         },
         {
           "key": "jellyfin_password",
-          "label": "Jellyfin password",
-          "description": "Your Jellyfin account password",
+          "label": "Password",
           "control": "text",
           "placeholder": "",
           "hidden": true,
@@ -55,9 +114,20 @@
           }
         },
         {
+          "key": "jellyfin_manage_libraries",
+          "label": "Manage Libraries",
+          "description": "Choose which Jellyfin libraries to sync from.",
+          "control": "action",
+          "action": "manage_jellyfin_libraries",
+          "buttonLabel": "Manage",
+          "showIf": {
+            "key": "library_source",
+            "value": "jellyfin"
+          }
+        },
+        {
           "key": "local_music_path",
           "label": "Music folder",
-          "description": "Path to your local music library",
           "control": "text",
           "placeholder": "/home/user/Music",
           "showIf": {
@@ -67,9 +137,45 @@
         },
         {
           "key": "use_album_art_for_tracks",
-          "label": "Use album art for tracks",
-          "description": "Show the album cover for tracks instead of per-track artwork. Per-track artwork requires very consistent tagging.",
+          "label": "Ignore Individual Track Artwork",
+          "description": "Show the album cover for tracks instead of per-track artwork.",
           "control": "toggle"
+        },
+        {
+          "key": "enable_online_metadata",
+          "label": "Online metadata",
+          "description": "Fetch artist bios, images, and album descriptions from TheAudioDB",
+          "control": "toggle",
+          "break": true
+        },
+        {
+          "key": "theaudiodb_api_key",
+          "label": "TheAudioDB API key",
+          "description": "Optional paid key for higher rate limits",
+          "control": "text",
+          "placeholder": "123",
+          "showIf": {
+            "key": "enable_online_metadata",
+            "value": true
+          }
+        },
+        {
+          "key": "enable_genre_enrichment",
+          "label": "Genre enrichment",
+          "description": "Look up additional genres from MusicBrainz and Last.fm",
+          "control": "toggle"
+        },
+        {
+          "key": "lastfm_api_key",
+          "label": "Last.fm API key",
+          "description": "Required free key from https://last.fm/api/account/create",
+          "control": "text",
+          "placeholder": "",
+          "hidden": true,
+          "showIf": {
+            "key": "enable_genre_enrichment",
+            "value": true
+          }
         }
       ]
     },
@@ -80,35 +186,35 @@
         {
           "key": "mpv_buffer_size",
           "label": "Audio buffer size",
-          "description": "Larger buffers can reduce stuttering, but use more memory.",
+          "description": "Larger buffers reduce stuttering but increase RAM usage",
           "control": "select",
           "options": [
             {
               "value": "1M",
-              "label": "1 MB (Very Low)"
+              "label": "1 MB"
+            },
+            {
+              "value": "5M",
+              "label": "5 MB"
             },
             {
               "value": "10M",
-              "label": "10 MB (Low)"
+              "label": "10 MB (Default)"
             },
             {
               "value": "25M",
-              "label": "25 MB (Default)"
+              "label": "25 MB"
             },
             {
               "value": "100M",
-              "label": "100 MB (High)"
-            },
-            {
-              "value": "500M",
-              "label": "500 MB (Very High)"
+              "label": "100 MB"
             }
           ]
         },
         {
           "key": "enable_replay_gain",
           "label": "Normalize Audio Levels (Replay Gain)",
-          "description": "Normalize audio levels across tracks to reduce volume differences",
+          "description": "Reduces volume differences between tracks",
           "control": "toggle"
         },
         {
@@ -134,6 +240,88 @@
             "key": "enable_replay_gain",
             "value": true
           }
+        },
+        {
+          "key": "enable_transcoding",
+          "label": "Enable transcoding",
+          "description": "Reduce bandwidth by having Jellyfin transcode audio. Works best for libraries of lossless files.",
+          "control": "toggle",
+          "break": true,
+          "showIf": {
+            "key": "library_source",
+            "value": "jellyfin"
+          }
+        },
+        {
+          "key": "transcoding_info",
+          "control": "info",
+          "description": "Higher bitrates sound better, but use more bandwidth. Opus is generally best for audio quality.\n'Good' is for casual listening, while 'Transparent' sounds almost identical to the original:\n\n• Opus: 96kbps is Good, 128kbps+ is Transparent.\n• AAC: 128kbps is Good, 192kbps+ is Transparent.\n• MP3: 160kbps is Good, 256kbps+ is Transparent.",
+          "showIf": {
+            "key": "enable_transcoding",
+            "value": true
+          }
+        },
+        {
+          "key": "transcode_format",
+          "label": "Transcode format",
+          "control": "select",
+          "options": [
+            {
+              "value": "mp3",
+              "label": "MP3"
+            },
+            {
+              "value": "aac",
+              "label": "AAC"
+            },
+            {
+              "value": "opus",
+              "label": "Opus"
+            }
+          ],
+          "showIf": {
+            "key": "enable_transcoding",
+            "value": true
+          }
+        },
+        {
+          "key": "transcode_bitrate",
+          "label": "Transcode bitrate",
+          "control": "select",
+          "options": [
+            {
+              "value": "64000",
+              "label": "64 kbps"
+            },
+            {
+              "value": "96000",
+              "label": "96 kbps"
+            },
+            {
+              "value": "128000",
+              "label": "128 kbps"
+            },
+            {
+              "value": "160000",
+              "label": "160 kbps"
+            },
+            {
+              "value": "192000",
+              "label": "192 kbps (Default)"
+            },
+            {
+              "value": "256000",
+              "label": "256 kbps"
+            },
+            {
+              "value": "320000",
+              "label": "320 kbps (Maximum)"
+            }
+          ],
+          "showIf": {
+            "key": "enable_transcoding",
+            "value": true
+          }
         }
       ]
     },
@@ -143,14 +331,14 @@
       "settings": [
         {
           "key": "enable_lrclib_lyrics",
-          "label": "LRClib lyrics",
-          "description": "Fetch synced lyrics from lrclib.net when available",
+          "label": "Online Lyrics",
+          "description": "Fetch lyrics from lrclib.net when available",
           "control": "toggle"
         },
         {
           "key": "enable_synced_lyrics",
-          "label": "Synced lyrics",
-          "description": "Show synced lyrics when available (requires LRClib)",
+          "label": "Synced Lyrics",
+          "description": "Show synced lyrics when available",
           "control": "toggle",
           "showIf": {
             "key": "enable_lrclib_lyrics",
@@ -160,77 +348,33 @@
       ]
     },
     {
-      "id": "metadata",
-      "label": "Metadata",
+      "id": "radio",
+      "label": "Radio",
       "settings": [
         {
-          "key": "enable_online_metadata",
-          "label": "Online metadata",
-          "description": "Fetch artist bios, images, and album descriptions from TheAudioDB",
+          "key": "enable_radio",
+          "label": "Enable Radio",
+          "description": "Recommend tracks based on genre, audio analysis, and your listening habits",
           "control": "toggle"
         },
         {
-          "key": "theaudiodb_api_key",
-          "label": "TheAudioDB API key",
-          "description": "Optional paid key for higher rate limits (leave as '123' for free personal use)",
-          "control": "text",
-          "placeholder": "123",
-          "showIf": {
-            "key": "enable_online_metadata",
-            "value": true
-          }
-        },
-        {
-          "key": "enable_genre_enrichment",
-          "label": "Genre enrichment",
-          "description": "Look up additional genres from MusicBrainz and Last.fm beyond what your library source provides",
-          "control": "toggle"
-        },
-        {
-          "key": "lastfm_api_key",
-          "label": "Last.fm API key",
-          "description": "Free key from last.fm/api/account/create — required for Last.fm genre lookups",
-          "control": "text",
-          "placeholder": "",
-          "hidden": true,
-          "showIf": {
-            "key": "enable_genre_enrichment",
-            "value": true
-          }
-        }
-      ]
-    },
-    {
-      "id": "discovery",
-      "label": "Discovery",
-      "settings": [
-        {
-          "key": "enable_discovery",
-          "label": "Enable discovery",
-          "description": "Suggest new songs based on listening history",
-          "control": "toggle"
-        },
-        {
-          "key": "enable_online_discovery",
-          "label": "Online discovery",
-          "description": "Allow fetching recommendations from external sources",
+          "key": "autoplay_default",
+          "label": "Automatically start autoplay when queue ends",
           "control": "toggle",
           "showIf": {
-            "key": "enable_discovery",
+            "key": "enable_radio",
             "value": true
           }
-        }
-      ]
-    },
-    {
-      "id": "privacy",
-      "label": "Privacy",
-      "settings": [
+        },
         {
-          "key": "enable_telemetry",
-          "label": "Telemetry",
-          "description": "Share anonymous usage data to help improve finload",
-          "control": "toggle"
+          "key": "autoplay_queue_length",
+          "label": "Minimum number of tracks to queue for autoplay",
+          "control": "number",
+          "min": 1,
+          "showIf": {
+            "key": "enable_radio",
+            "value": true
+          }
         }
       ]
     }

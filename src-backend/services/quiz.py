@@ -16,8 +16,8 @@ import threading
 import mpv
 from peewee import JOIN, fn
 
-import state
-from database import Album, Artist, PlayHistory, Track
+from core import state
+from core.database import Album, Artist, PlayHistory, Track, track_scope_clause
 
 ANSWER_STYLES = ("multiple_choice", "open_ended")
 START_POINTS = ("beginning", "random")
@@ -167,23 +167,25 @@ def _load_pool() -> list[dict]:
     and holding the whole pool in memory means picking an answer, its wrong
     options and its suggestions costs no queries at all.
     """
-    rows = list(Track
-                .select(Track.id.alias("id"),
-                        Track.title.alias("title"),
-                        Track.duration_ms.alias("duration_ms"),
-                        Album.id.alias("album_id"),
-                        Album.title.alias("album_title"),
-                        Artist.id.alias("artist_id"),
-                        Artist.name.alias("artist_name"),
-                        fn.COUNT(PlayHistory.id).alias("plays"))
-                .join(Album, on=(Track.album == Album.id))
-                .switch(Track)
-                .join(Artist, on=(Track.artist == Artist.id))
-                .switch(Track)
-                .join(PlayHistory, JOIN.LEFT_OUTER,
-                      on=((PlayHistory.track == Track.id) & (PlayHistory.visible == True)))
-                .group_by(Track.id)
-                .dicts())
+    query = (Track
+             .select(Track.id.alias("id"),
+                     Track.title.alias("title"),
+                     Track.duration_ms.alias("duration_ms"),
+                     Album.id.alias("album_id"),
+                     Album.title.alias("album_title"),
+                     Artist.id.alias("artist_id"),
+                     Artist.name.alias("artist_name"),
+                     fn.COUNT(PlayHistory.id).alias("plays"))
+             .join(Album, on=(Track.album == Album.id))
+             .switch(Track)
+             .join(Artist, on=(Track.artist == Artist.id))
+             .switch(Track)
+             .join(PlayHistory, JOIN.LEFT_OUTER,
+                   on=((PlayHistory.track == Track.id) & (PlayHistory.visible == True))))
+    scope = track_scope_clause(state.settings.get("jellyfin_library_ids"))
+    if scope is not None:
+        query = query.where(scope)
+    rows = list(query.group_by(Track.id).dicts())
     for row in rows:
         row["id"] = str(row["id"])
         row["album_id"] = str(row["album_id"] or "")

@@ -13,7 +13,7 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 
-from config import get_data_dir
+from core.config import get_data_dir
 
 LOG_FILENAME = "finload.log"
 

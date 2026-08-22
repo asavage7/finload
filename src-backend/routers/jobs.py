@@ -6,41 +6,9 @@ import asyncio
 
 from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconnect
 
-import state
+from core import state
 
 router = APIRouter()
-
-# Display metadata for the Tasks UI, keyed by the state.jobs registry name.
-# `gate` is the settings key that must be truthy for the job to run (None =
-# always runnable); `disabled_reason` is shown when that gate is off. Edit this
-# table to add, relabel, or re-describe a task; the frontend renders whatever
-# this returns, in this order.
-_JOB_META = {
-    "sync": {
-        "label": "Library sync",
-        "description": "Import new tracks and remove deleted ones from your library source.",
-        "gate": None,
-        "disabled_reason": None,
-    },
-    "audio_features": {
-        "label": "Audio analysis",
-        "description": "Extract per-track tempo and timbre features used by radio and recommendations.",
-        "gate": "enable_discovery",
-        "disabled_reason": "Turn on Discovery in settings to analyze audio.",
-    },
-    "genre_enrichment": {
-        "label": "Genre matching",
-        "description": "Look up genres for your albums and artists from MusicBrainz and Last.fm.",
-        "gate": "enable_genre_enrichment",
-        "disabled_reason": "Turn on genre enrichment in settings.",
-    },
-    "metadata": {
-        "label": "Artist info",
-        "description": "Fetch artist bios and images.",
-        "gate": "enable_online_metadata",
-        "disabled_reason": "Turn on online metadata in settings.",
-    },
-}
 
 
 def _get_job(name: str):
@@ -51,33 +19,25 @@ def _get_job(name: str):
 
 
 def _start(job, name: str, force: bool):
-    # Sync's unit of work is "the active provider", not a force flag — every
-    # other job just re-enriches everything un-enriched (or, with force,
-    # everything already enriched too).
+    # Sync also needs the active provider threaded through; every other job
+    # just re-enriches everything un-enriched (or, with force, everything
+    # already enriched too).
     if name == "sync":
-        return job.start(state.provider)
+        return job.start(state.provider, force=force)
     return job.start(force=force)
 
 
 @router.get("/api/jobs")
 def list_jobs():
-    """Every known job with its display metadata, current state, and whether a
-    settings gate has it disabled. Drives the Tasks UI; order follows _JOB_META."""
-    jobs = []
-    for name, meta in _JOB_META.items():
-        job = state.jobs.get(name)
-        if job is None:
-            continue
-        enabled = meta["gate"] is None or bool(state.settings.get(meta["gate"]))
-        jobs.append({
-            "name": name,
-            "label": meta["label"],
-            "description": meta["description"],
-            "enabled": enabled,
-            "disabled_reason": None if enabled else meta["disabled_reason"],
-            "state": job.state,
-        })
-    return {"jobs": jobs}
+    """Every registered job's name, live state, and force-rerun capability.
+
+    Display metadata (label, description, which settings gate enables it)
+    lives entirely in the frontend's settings schema now, so the Tasks UI
+    stays in sync with schema edits without touching this file."""
+    return {"jobs": [
+        {"name": name, "supports_force": job.supports_force, "state": job.state}
+        for name, job in state.jobs.items()
+    ]}
 
 
 @router.post("/api/jobs/{name}/start")

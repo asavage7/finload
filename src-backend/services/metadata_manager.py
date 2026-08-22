@@ -18,9 +18,9 @@ from typing import Optional
 
 from PIL import Image
 
-from background import BackgroundJob
-from config import USER_AGENT
-from database import Artist
+from core.config import USER_AGENT
+from core.database import Artist
+from services.background import BackgroundJob
 from providers.base import cached_image_path
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,8 @@ _THUMB_SIZES = (240, 800)
 
 
 class MetadataManager(BackgroundJob):
+    supports_force = True
+
     def __init__(self, settings):
         super().__init__()
         self._settings = settings
@@ -79,6 +81,12 @@ class MetadataManager(BackgroundJob):
         self._emit(total=len(artists))
 
         for processed, artist in enumerate(artists, start=1):
+            if not self._settings.get("enable_online_metadata"):
+                # Setting turned off mid-run (same gate start() checks) --
+                # stop rather than keep working on a disabled feature.
+                self._emit(status="idle", message="Stopped — disabled in settings")
+                return
+            self.wait_if_paused()
             self._enrich_artist(artist)
             self._emit(processed=processed, message=f"Enriching: {artist.name}")
 

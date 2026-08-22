@@ -15,6 +15,15 @@ export type JobState = {
 
 export const idleJobState: JobState = { status: "idle", message: "", processed: 0, total: 0 };
 
+// Shape of one entry from GET /api/jobs. Display metadata (label,
+// description, which settings key gates it) lives in the frontend's
+// settings schema instead — this is only what the backend actually owns.
+export type JobInfo = {
+  name: string;
+  supports_force: boolean;
+  state: JobState;
+};
+
 // Live progress for one job via its websocket. Returns an unsubscribe function.
 export function subscribeJobStatus(name: string, onUpdate: (state: JobState) => void): () => void {
   const ws = new WebSocket(wsUrl(`/ws/jobs/${name}`));

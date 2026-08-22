@@ -6,14 +6,14 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from logging_config import setup_logging
+from core.logging_config import setup_logging
 
 # Before importing anything that logs at import time, so nothing is emitted
 # while the root logger still has no handlers.
 setup_logging()
 
-import state  # noqa: E402
-from config import get_backend_host, get_backend_port, get_cors_origins  # noqa: E402
+from core import state  # noqa: E402
+from core.config import get_backend_host, get_backend_port, get_cors_origins  # noqa: E402
 from routers import (  # noqa: E402
     accent_colors,
     history,

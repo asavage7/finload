@@ -13,8 +13,8 @@ stays trivially testable on its own.
 """
 import random
 
-from database import PlayHistory, PlaylistTrack, QueueItem, Track
-import discovery
+from core.database import PlayHistory, PlaylistTrack, QueueItem, Track, track_scope_clause
+from services import discovery
 
 MIX_BATCH_SIZE = 3          # tracks generated per top-up (small on purpose — lets
                              # real user behavior steer the *next* batch quickly
@@ -34,7 +34,8 @@ SEED_SAMPLE_SIZE = 4  # how many tracks to sample off an album/artist to seed it
                        # extra_seed_ids param
 
 
-def pick_seed_tracks(entity_type: str, entity_id: str, n: int = SEED_SAMPLE_SIZE) -> list[str]:
+def pick_seed_tracks(entity_type: str, entity_id: str, n: int = SEED_SAMPLE_SIZE,
+                      library_ids: list[str] | None = None) -> list[str]:
     """Picks up to n random tracks to seed an album/artist/playlist radio
     from, most representative track first (well, first in whatever order
     random.sample returns -- see below). Blending several tracks' feat/tags
@@ -44,15 +45,23 @@ def pick_seed_tracks(entity_type: str, entity_id: str, n: int = SEED_SAMPLE_SIZE
     radio never has to wait on it -- see
     PlaybackManager.start_radio_from_reference. Returns [] if the
     album/artist/playlist has no tracks at all.
+
+    ``library_ids`` scopes seeding to the caller's current Jellyfin library
+    selection (see database.track_scope_clause) -- this module stays
+    state-free, so the caller resolves the setting and passes it in.
     """
     if entity_type == "album":
-        tracks = list(Track.select(Track.id).where(Track.album == entity_id))
+        query = Track.select(Track.id).where(Track.album == entity_id)
     elif entity_type == "artist":
-        tracks = list(Track.select(Track.id).where(Track.artist == entity_id))
+        query = Track.select(Track.id).where(Track.artist == entity_id)
     elif entity_type == "playlist":
-        tracks = list(Track.select(Track.id).join(PlaylistTrack).where(PlaylistTrack.playlist == entity_id))
+        query = Track.select(Track.id).join(PlaylistTrack).where(PlaylistTrack.playlist == entity_id)
     else:
         raise ValueError(f"unknown entity_type {entity_type!r}")
+    scope = track_scope_clause(library_ids)
+    if scope is not None:
+        query = query.where(scope)
+    tracks = list(query)
     if not tracks:
         return []
     ids = [t.id for t in tracks]
@@ -108,7 +117,8 @@ def generate_batch(seed_track_id: str, context: list[str], exclude_ids: set[str]
                     feedback: dict[str, float] | None = None,
                     manual_ids: set[str] | None = None,
                     elapsed_ms: float | None = None,
-                    reroll: bool = False) -> list[str]:
+                    reroll: bool = False,
+                    library_ids: list[str] | None = None) -> list[str]:
     """Returns up to `size` new track IDs for the mix. extra_seed_ids is
     only meaningful on the first batch of an album/artist radio (see
     pick_seed_tracks) -- later top-ups don't re-pass it, since by then
@@ -117,10 +127,12 @@ def generate_batch(seed_track_id: str, context: list[str], exclude_ids: set[str]
     session_context) so a manual add steers the mix instead of being
     treated as just another algorithm pick. reroll marks an explicit
     "give me a different mix" regeneration (see discovery.build_queue's
-    reroll param)."""
+    reroll param). library_ids is the caller's current Jellyfin library
+    selection, threaded through to discovery.build_queue's candidate pool --
+    see pick_seed_tracks."""
     entries, _richness = discovery.build_queue(
         seed_track_id, queue_length=size, session_context=context, exclude_ids=exclude_ids,
         extra_seed_ids=extra_seed_ids, feedback=feedback, manual_ids=manual_ids,
-        session_elapsed_ms=elapsed_ms, reroll=reroll,
+        session_elapsed_ms=elapsed_ms, reroll=reroll, library_ids=library_ids,
     )
     return [e.track.id for e in entries]

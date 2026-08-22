@@ -1,7 +1,7 @@
 """Music quiz routes: session lifecycle, rounds, grading and suggestions."""
 from fastapi import APIRouter, Body, HTTPException
 
-import quiz
+from services import quiz
 
 router = APIRouter()
 

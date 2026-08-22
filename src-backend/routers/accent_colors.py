@@ -12,7 +12,7 @@ import os
 from fastapi import APIRouter
 from PIL import Image
 
-from database import PlaylistTrack, Track
+from core.database import PlaylistTrack, Track
 from routers.images import playlist_image_path, resolve_image_path
 
 logger = logging.getLogger(__name__)

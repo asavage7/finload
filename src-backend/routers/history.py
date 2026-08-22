@@ -1,7 +1,8 @@
 """Play history: what was listened to, when, and how much of it."""
 from fastapi import APIRouter
 
-from database import Album, Artist, PlayHistory, Track
+from core import state
+from core.database import Album, Artist, PlayHistory, Track, track_scope_clause
 
 router = APIRouter()
 
@@ -14,9 +15,11 @@ def get_history(limit: int = 100):
                .join(Artist)
                .switch(Track)
                .join(Album)
-               .where(PlayHistory.visible == True)
-               .order_by(PlayHistory.played_at.desc())
-               .limit(limit))
+               .where(PlayHistory.visible == True))
+    scope = track_scope_clause(state.settings.get("jellyfin_library_ids"))
+    if scope is not None:
+        entries = entries.where(scope)
+    entries = entries.order_by(PlayHistory.played_at.desc()).limit(limit)
     return [
         {
             "id": e.id,

@@ -26,7 +26,7 @@
   import { fade } from "svelte/transition";
   import { onDestroy, onMount } from "svelte";
   import { apiUrl, wsUrl } from "$lib/backend";
-  import { updatePlayerState } from "$lib/utils/store";
+  import { updatePlayerState } from "$lib/utils/playerStatePatch";
   import { initMediaSession } from "$lib/utils/mediaSession";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";

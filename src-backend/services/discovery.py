@@ -31,7 +31,8 @@ import json
 import math
 import random
 
-from database import Album, AlbumGenre, Artist, ArtistGenre, Genre, PlayHistory, Track, TrackFeatures
+from core.database import (Album, AlbumGenre, Artist, ArtistGenre, Genre, PlayHistory, Track,
+                      TrackFeatures, track_scope_clause)
 
 # --- similarity scoring (shared: how two tracks compare) -------------------
 
@@ -73,7 +74,7 @@ def _bulk_load_features() -> dict[str, dict]:
     distance. Standardization happens here rather than in the DB so it stays
     correct as the library grows; it matches audio_analysis.compute_hubness_stats
     so the stored hubness stats describe these same distances."""
-    from audio_analysis import FEATURE_VERSION
+    from services.audio_analysis import FEATURE_VERSION
 
     raw: dict[str, tuple] = {}
     query = TrackFeatures.select(
@@ -615,7 +616,8 @@ def build_queue(seed_track_id: str, queue_length: int = 20,
                  feedback: dict[str, float] | None = None,
                  manual_ids: set[str] | None = None,
                  session_elapsed_ms: float | None = None,
-                 reroll: bool = False) -> tuple[list[QueueEntry], float]:
+                 reroll: bool = False,
+                 library_ids: list[str] | None = None) -> tuple[list[QueueEntry], float]:
     """Build a queue from ``seed_track_id``. Returns ``(entries, richness)``;
     richness 0..1 says how much genuinely strong material surrounds the seed
     (see RICH_MASS_TARGET) -- when it's low the queue already holds tighter
@@ -630,12 +632,19 @@ def build_queue(seed_track_id: str, queue_length: int = 20,
     re-roll actually changes the front of the queue.
 
     Per-track data is bulk-loaded once; the per-pick loop scores at most
-    POOL_CAP candidates."""
+    POOL_CAP candidates. ``library_ids`` scopes the candidate pool to the
+    caller's current Jellyfin library selection (see
+    database.track_scope_clause) -- this module stays state-free, so the
+    caller resolves the setting and passes it in."""
     if rng is None:
         rng = random.Random()
     seed = Track.get_by_id(seed_track_id)
 
-    all_tracks = list(Track.select())
+    candidates_query = Track.select()
+    scope = track_scope_clause(library_ids)
+    if scope is not None:
+        candidates_query = candidates_query.where(scope)
+    all_tracks = list(candidates_query)
     track_by_id = {t.id: t for t in all_tracks}
     features_by_id = _bulk_load_features()
     rows_by_album = _bulk_genre_rows_by_album()
