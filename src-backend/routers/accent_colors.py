@@ -1,8 +1,9 @@
 """Accent color extraction from cover art.
 
-Derives three colors from an item's artwork: an accent that white text can sit
-on, a light variant for colored text on dark backgrounds, and a dark variant
-used as the base background.
+Derives three colors from an item's artwork:
+ - Accent: A vibrant color that sits well behind white text.
+ - Light Accent: A light color that can be used for text on a dark background.
+ - Dark Accent: A dark color that can be used for backgrounds.
 """
 import colorsys
 import hashlib
@@ -26,33 +27,33 @@ _ACCENT_CONTRAST_EXP = 2.0
 _ACCENT_MIN_STANDOUT = 3.0
 _ACCENT_DARK_FLOOR_L = 0.15
 _SECONDARY_MIN_HUE_DIST = 10  # degrees from the accent hue to count as a distinct color
-_SECONDARY_MIN_CHROMA = 0.12  # must be a real color, not a near-grey
-_SECONDARY_MIN_SHARE = 0.02   # min fraction of pixels to be "prevalent"
+_SECONDARY_MIN_CHROMA = 0.12  # avoids desaturated colors
+_SECONDARY_MIN_SHARE = 0.02   # min fraction of pixels to be considered
 _LIGHT_TARGET_L = 0.80        # lightness the secondary color is raised to for text use
 _TEXT_CONTRAST = 4.5          # WCAG AA: white-on-accent and light-on-dark
 
-# Extraction reads a small thumbnail; this matches the standard cover size so
-# the image is usually already cached.
+# Matches the size used by the grid view to avoid extra downloads
 _SOURCE_IMAGE_SIZE = 240
 
 
 def invalidate(item_id: str):
-    """Drop the cached colors for an item (call when its image changes)."""
+    """Drop the cached colors for an item when its image changes."""
     _accent_color_cache.pop(item_id, None)
     _accent_color_cache.pop(playlist_image_path(item_id), None)
 
 
 def _to_hls(rgb):
-    """RGB 0-255 -> (hue, lightness, saturation), each 0..1."""
+    """Converts 8-bit (R, G, B) to (Hue, Lightness, Saturation)"""
     return colorsys.rgb_to_hls(*[c / 255 for c in rgb])
 
 
 def _to_rgb(h, l, s):
-    """(hue, lightness, saturation) 0..1 -> clamped RGB ints 0-255."""
+    """Converts (Hue, Lightness, Saturation) to 8-bit (R, G, B)"""
     return [max(0, min(255, round(c * 255))) for c in colorsys.hls_to_rgb(h, l, s)]
 
 
 def rgb_to_hex(rgb):
+    """Converts 8-bit (R, G, B) to a hex string."""
     return '#{:02x}{:02x}{:02x}'.format(*rgb)
 
 
@@ -75,7 +76,7 @@ def _chroma(l, s):
 
 
 def _hue_dist(h1, h2):
-    """Shortest distance between two hues, in degrees (0..180)."""
+    """Shortest distance between two hues, 0-180 degrees."""
     d = abs(h1 - h2) * 360
     return min(d, 360 - d)
 
@@ -103,10 +104,7 @@ def get_accent_colors(item_id: str, type: str = "album", image_path: str | None 
     if not cache_path or not os.path.exists(cache_path):
         return {"error": "Image not found"}
 
-    # Tracks normally resolve to their album's cover, so a dozen+ tracks on the
-    # same album all land on this same file. Key the cache by that resolved
-    # path too, so only the first of them pays for palette extraction and the
-    # rest are a plain dict hit.
+    # Return the same accent color for the same image file without recomputing
     if cache_path in _accent_color_cache:
         result = _accent_color_cache[cache_path]
         _accent_color_cache[item_id] = result
@@ -118,7 +116,7 @@ def get_accent_colors(item_id: str, type: str = "album", image_path: str | None 
         def accent_fitness(rgb, share):
             _, l, s = _to_hls(rgb)
             white_fit = min(_contrast((255, 255, 255), rgb) / _TEXT_CONTRAST, 1.0)
-            dark_fade = min(1.0, l / _ACCENT_DARK_FLOOR_L)   # near-black reads as black, not hue
+            dark_fade = min(1.0, l / _ACCENT_DARK_FLOOR_L) 
             return (_chroma(l, s) ** _ACCENT_CHROMA_EXP) * share * (white_fit ** _ACCENT_CONTRAST_EXP) * dark_fade
 
         best_rgb = max(palette, key=lambda entry: accent_fitness(*entry))[0]
@@ -166,19 +164,12 @@ def get_accent_colors(item_id: str, type: str = "album", image_path: str | None 
         return {"error": str(e)}
 
 
-# Saturation band for hash-derived (non-image) accents — real cover-art
-# extraction varies in saturation too, so this is a range, not one fixed
-# value: with ~100+ genres sharing only 360 possible hues, birthday-paradox
-# math guarantees some near-duplicate hues (e.g. "Punk" and "Punk Rock"
-# landed 2 degrees apart) — varying saturation independently means two
-# genres have to collide on *both* to actually look alike, which is far less
-# likely than colliding on hue alone.
+# Saturation band for hash-derived accents used for genre pages.
 _SYNTHETIC_SATURATION_RANGE = (0.45, 0.70)
 
 
 def _hash_unit_values(seed: str) -> tuple[float, float]:
-    """Two independent 0..1 values from one hash — used for hue and a
-    saturation offset, deliberately uncorrelated with each other."""
+    """Two independent values from one hash. The first is hue and the second is a saturation offset."""
     digest = hashlib.sha1(seed.encode("utf-8")).digest()
     a = int.from_bytes(digest[0:4], "big") / 0xFFFFFFFF
     b = int.from_bytes(digest[4:8], "big") / 0xFFFFFFFF
@@ -186,13 +177,7 @@ def _hash_unit_values(seed: str) -> tuple[float, float]:
 
 
 def get_synthetic_accent_colors(seed: str) -> list[str]:
-    """Deterministic [accent, light, dark] triple from a seed string (e.g. a
-    genre id) — no image involved. Mirrors the accent/dark-primary contrast
-    fitting in ``get_accent_colors`` (same target contrast ratios, same
-    lightness floor/ceiling) and its no-secondary-color fallback for the
-    light variant, so a genre's colors read as part of the same visual family
-    as real cover-derived accents rather than a separately-tuned palette.
-    """
+    """Deterministic accent colors from a seed string."""
     hue_frac, sat_frac = _hash_unit_values(seed)
     ah = hue_frac
     sat_lo, sat_hi = _SYNTHETIC_SATURATION_RANGE

@@ -1,6 +1,6 @@
 """Shared lyrics helpers used by every provider.
 
-Lyric results use one shape everywhere:
+Lyric results one of the following:
 
     {"type": "synced",   "lines": [{"time_ms": float, "text": str}, ...]}
     {"type": "unsynced", "text": str}
@@ -15,7 +15,7 @@ from core.config import USER_AGENT
 
 _REQUEST_TIMEOUT = 5
 
-# [mm:ss] or [mm:ss.xx]; a line can carry several timestamps.
+# [mm:ss] or [mm:ss.xx]
 _LRC_TIMESTAMP = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
 _LRC_TAG = re.compile(r"\[[^\]]*\]")
 
@@ -26,7 +26,7 @@ def parse_lrc(text: str, synced_enabled: bool = True) -> dict:
     """Parse LRC text into a lyrics result.
 
     Returns synced lines when timestamps are present (and allowed), otherwise
-    falls back to the plain text content.
+    falls back to unsynced.
     """
     lines = []
     plain = []
@@ -50,8 +50,8 @@ def fetch_lrclib(track, synced_enabled: bool = True) -> tuple[dict, str | None]:
     """Look a track up on lrclib.net.
 
     Returns (result, raw_synced_lrc). The raw LRC text is provided so callers
-    that can push lyrics back to their source (e.g. a Jellyfin server) have the
-    original file content, not just the parsed lines.
+    that can push lyrics back to their source have the
+    original file content.
     """
     try:
         query = urllib.parse.urlencode({

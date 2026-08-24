@@ -1,11 +1,4 @@
 fastapi>=0.95.0
-# Plain uvicorn plus an explicit websocket implementation, rather than
-# uvicorn[standard]. The extras that pulls in add ~21MB to the bundle for
-# nothing this app uses: uvloop and httptools are throughput optimisations that
-# don't matter for a single-user backend on localhost (uvicorn falls back to
-# asyncio and h11 on its own), watchfiles only serves --reload, and PyYAML only
-# parses --log-config files. websockets is the one extra that is load-bearing,
-# since the player state is pushed over /ws/playback.
 uvicorn>=0.22.0
 websockets>=10.0
 peewee>=3.15.0
@@ -16,5 +9,5 @@ mutagen>=1.45.0
 python-dotenv>=1.0.0
 pyinstaller>=5.0.0
 python-multipart>=0.0.5
-librosa>=0.10.0,<0.12  # pinned: _numba_shim overrides internal librosa.beat/util functions
+librosa>=0.10.0,<0.12  # pinned so that _numba_shim doesn't break randomly
 soundfile>=0.12.0
