@@ -17,14 +17,12 @@
 }
 
 :root {
-	/* Player accent: the currently-playing track's album colors. Set on :root
-	   from the root layout so any element can reference the playing accent. */
+	/* Currently played track accent colors */
 	--player-accent: #505050;
 	--player-accent-light: #ffffff;
 	--player-accent-dark: #1e1e1e;
 
-	/* Contextual accent: the album/artist/playlist (or card) currently being
-	   viewed. Defaulted here, overridden per-subtree (e.g. on a page container). */
+	/* View-specific accent colors */
 	--accent: #505050;
 	--accent-light: #ffffff;
 	--accent-dark: #1e1e1e;
@@ -42,10 +40,14 @@ samp {
 	font-family: var(--font-mono);
 }
 
+/* Number formatting for time displays */
+
 .time-text {
 	font-variant-numeric: tabular-nums;
 	font-feature-settings: "tnum";
 }
+
+/* Transitions for slide-in animations */
 
 @keyframes slide-in-left {
   from { transform: translateX(28px); opacity: 0; }
@@ -58,10 +60,7 @@ samp {
 .slide-in-left  { animation: slide-in-left  180ms ease-out; }
 .slide-in-right { animation: slide-in-right 180ms ease-out; }
 
-/* Background orbs for the onboarding flow. Position/size are randomized and
-   re-targeted from JS (see onboarding/+page.svelte); this class just makes
-   those changes drift smoothly instead of jumping. transition-duration is
-   set inline per-orb since it's randomized per retarget. */
+/* Background orbs for the onboarding flow. */
 .onboarding-orb {
 	position: absolute;
 	border-radius: 9999px;

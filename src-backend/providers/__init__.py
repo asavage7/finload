@@ -1,9 +1,4 @@
-"""Media-source providers.
-
-Use ``create_provider(settings)`` to obtain the provider for the user's chosen
-``library_source``. The rest of the app depends only on the ``MediaProvider``
-interface, so adding a source means adding a module here and a branch below.
-"""
+"""Media Source providers."""
 from .base import MediaProvider
 from .jellyfin import JellyfinProvider
 from .local import LocalProvider
@@ -19,5 +14,5 @@ def create_provider(settings) -> MediaProvider:
     if source == "jellyfin":
         return JellyfinProvider(settings)
 
-    # Unknown source — fall back to Jellyfin so the app keeps working.
+    # Fallback to jellyfin
     return JellyfinProvider(settings)

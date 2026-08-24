@@ -1,4 +1,3 @@
-"""App entry point: builds the FastAPI app and wires the route modules together."""
 import os
 import threading
 
@@ -8,13 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.logging_config import setup_logging
 
-# Before importing anything that logs at import time, so nothing is emitted
-# while the root logger still has no handlers.
+# Set up logging before importing other app modules
 setup_logging()
 
-from core import state  # noqa: E402
-from core.config import get_backend_host, get_backend_port, get_cors_origins  # noqa: E402
-from routers import (  # noqa: E402
+from core import state
+from core.config import get_backend_host, get_backend_port, get_cors_origins
+from routers import (
     accent_colors,
     history,
     images,
@@ -45,23 +43,12 @@ for module in (library, search, images, accent_colors, playlists,
 
 @app.get("/api/health")
 def health():
-    """Readiness probe the frontend polls before it renders the app shell.
-
-    Deliberately touches nothing: uvicorn only starts serving once the startup
-    event has finished, so a reply here already means the managers and the mpv
-    core are built. Anything heavier would just make readiness look later than
-    it is.
-    """
+    """Checks if the backend is available."""
     return {"status": "ok"}
 
 
 def _exit_when_orphaned():
-    """Exit the process if our parent (the Tauri app) dies.
-
-    Tauri kills this sidecar on a normal quit, but if the app is force-killed the
-    sidecar would be reparented and linger as an orphaned uvicorn. Detect that by
-    watching for a change in our parent PID and hard-exit when it happens.
-    """
+    """Exit the proces if the app is closed to avoid zombie processes."""
     initial_ppid = os.getppid()
     stop = threading.Event()
     while not stop.wait(2.0):
@@ -71,18 +58,12 @@ def _exit_when_orphaned():
 
 @app.on_event("startup")
 def on_startup():
+    """Initialize the app and sync on open if onboarding is complete."""
     state.init_playback()
     threading.Thread(target=_exit_when_orphaned, daemon=True).start()
-    # Sync is incremental once a source has a checkpoint (see SyncManager),
-    # so running it on every launch is cheap after the first one. Skipped pre-
-    # onboarding since there's no configured source to sync yet.
     if state.settings.get("onboarding_complete"):
         state.sync.start(state.provider)
 
 
 if __name__ == "__main__":
-    # This runs only for the PyInstaller-frozen sidecar (production). A frozen
-    # bundle has no importable "main" module on disk and no source files to
-    # watch, so pass the app object directly and never enable reload here.
-    # (Dev uses `uvicorn main:app --reload` via scripts/run-backend.cjs instead.)
     uvicorn.run(app, host=get_backend_host(), port=get_backend_port())

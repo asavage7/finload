@@ -10,12 +10,7 @@ from core.database import Track, db as peewee_db
 
 router = APIRouter()
 
-# Concurrent requests for different tracks on the same album all resolve to the
-# same cache path (the album cover). Without a lock, simultaneous cache misses
-# each start their own download and write to that path independently, and the
-# interleaved writes corrupt whichever file loses the race. One lock per path
-# serializes that so only the first request downloads; the rest just wait and
-# then hit the now-populated cache.
+# Locks to avoid file corruption on concurrent downloads of the same image.
 _download_locks: dict[str, threading.Lock] = {}
 _download_locks_guard = threading.Lock()
 
@@ -28,12 +23,9 @@ def _lock_for(path: str) -> threading.Lock:
             _download_locks[path] = lock
         return lock
 
-# Mutable images (user-uploaded playlist covers) must not be cached by the
-# browser; they're re-fetched with a cache-busting param when they change.
+# Mutable images (mainly playlist covers) must not be cached by the browser
 MUTABLE_IMAGE_HEADERS = {"Cache-Control": "no-store"}
-# Album/track/artist art is content-addressed by {item_id}_{size}, so it's
-# effectively immutable. Let the browser cache it hard to avoid re-fetching
-# every cover on each virtualized scroll.
+# Alternatively, immutable images (cover art) can be cached for a long time
 IMMUTABLE_IMAGE_HEADERS = {"Cache-Control": "public, max-age=604800, immutable"}
 
 MAX_IMAGE_SIZE = 2000
@@ -50,12 +42,7 @@ def playlist_image_path(playlist_id: str) -> str:
 
 
 def _art_candidates(item_id: str, type: str) -> list[str]:
-    """IDs to try, in order, when resolving art for an item.
-
-    Tracks normally just show their album's cover. With the
-    use_album_art_for_tracks setting off, per-track art is tried first and the
-    album cover stays as the fallback.
-    """
+    """IDs to try, in order, when resolving art for an item."""
     if type != "track":
         return [item_id]
     track = Track.get_or_none(Track.id == item_id)

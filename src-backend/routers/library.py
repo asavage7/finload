@@ -15,21 +15,14 @@ router = APIRouter()
 
 
 def _library_scope():
-    """The current Jellyfin library-selection scope clause, or None when
-    unfiltered — see database.track_scope_clause. Read live so a selection
-    change takes effect on the very next request, no cache to invalidate."""
+    """Current library scope when using Jellyfin."""
     return track_scope_clause(state.settings.get("jellyfin_library_ids"))
 
 
-# ---------------------------------------------------------------------------
-# Genre lookups
-# ---------------------------------------------------------------------------
-# Detail-page chips (album/artist) only for now — the library list/grid views
-# are fixed-row-height virtualized and would need real layout work to support
-# variable-width genre chips safely, so they're deferred.
+# Genre Lookups
 
 def _best_genres(rows: list[dict], cap: int) -> list[dict]:
-    """Dedup (by genre id) to the best (highest-weight) row per genre."""
+    """Dedup (by genre id) to the highest weight row per genre."""
     best: dict[str, dict] = {}
     for row in rows:
         gid = row["id"]
@@ -49,9 +42,7 @@ def _album_genres(album_id: str, cap: int = 8) -> list[dict]:
 
 
 def _artist_genres(artist_id: str, cap: int = 8) -> list[dict]:
-    """Union of the artist's own genre links and its albums' — stored
-    separately (an artist can span genres that don't apply to every release,
-    see ArtistGenre in database.py) but combined here for display."""
+    """Combine genres from artist page and their albums for discovery."""
     rows = list(ArtistGenre
                 .select(Genre.id.alias("id"), Genre.name.alias("name"), ArtistGenre.weight.alias("weight"))
                 .join(Genre, on=(ArtistGenre.genre == Genre.id))
@@ -86,7 +77,7 @@ def _all_album_ids_for_genre(genre_id: str) -> list[str]:
 
 
 def _track_ids_for_genre(genre_id: str, cap: int | None = None) -> list[str]:
-    """All tracks under a genre, randomized, optionally capped."""
+    """Returns all tracks for a genre in random order."""
     album_ids = _all_album_ids_for_genre(genre_id)
     if not album_ids:
         return []
@@ -104,8 +95,7 @@ def _track_ids_for_genre(genre_id: str, cap: int | None = None) -> list[str]:
 
 
 def _all_artist_ids_for_genre(genre_id: str) -> list[str]:
-    """Union of artists directly tagged with this genre and artists reachable
-    via a tagged album (mirrors ``_artist_genres``'s read-time union)."""
+    """Find all artists/album artists for a given genre."""
     rows = list(ArtistGenre
                 .select(ArtistGenre.artist.alias("eid"), ArtistGenre.weight.alias("w"))
                 .where(ArtistGenre.genre == genre_id)
@@ -122,11 +112,8 @@ def _all_artist_ids_for_genre(genre_id: str) -> list[str]:
     return ordered
 
 
-# ---------------------------------------------------------------------------
-# Sorted, paginated listings
-# ---------------------------------------------------------------------------
+# Library Sorting
 
-# Sortable columns per entity. Aggregates match the annotations selected below.
 _ARTIST_SORTS = {
     "name": Artist.name.collate("NOCASE"),
     "album_count": fn.COUNT(Album.id.distinct()),
@@ -151,7 +138,7 @@ _TRACK_SORTS = {
 def apply_sort_and_page(query, sorts: dict, sort_by: str, sort_order: str,
                         default: str, secondary,
                         start_index: int | None, end_index: int | None):
-    """Order a listing query by a whitelisted column and slice it for paging."""
+    """Order a listing query by a sort mode and page it for virtualization."""
     expr = sorts.get(sort_by, sorts[default])
     primary = expr.asc() if sort_order == "asc" else expr.desc()
     query = query.order_by(primary, secondary.asc())
@@ -166,8 +153,7 @@ def get_artists_count():
 
 
 def _serialize_artist_row(a) -> dict:
-    """Common artist-list-item shape shared by /api/artists, /api/genre/{id},
-    and the home page's recently-played-artists row."""
+    """Common artist-list-item shape."""
     return {
         "id": a.id,
         "name": a.name,
@@ -177,8 +163,7 @@ def _serialize_artist_row(a) -> dict:
 
 
 def _artists_with_aggregates(where_clause=None, limit: int | None = None, order_by=None):
-    """Artist query pre-joined with Album/Track count/duration aggregates —
-    the shape ``_serialize_artist_row`` expects."""
+    """Artist query joined with Album/Track count/duration aggregates."""
     query = (Artist.select(
                  Artist,
                  fn.COUNT(Album.id.distinct()).alias("album_count"),
@@ -215,10 +200,7 @@ def get_albums_count():
 
 
 def _serialize_album_row(a) -> dict:
-    """Common album-list-item shape shared by /api/albums, /api/genre/{id},
-    and the album detail page's more-by-artist/similar-albums sections.
-    Expects the album/track aggregates already selected/joined (track_count,
-    total_ms) — see the query in ``get_albums``.
+    """Common album-list-item shape.Expects the album/track aggregates already selected/joined (track_count, total_ms).
     """
     return {
         "id": str(a.id),
@@ -233,9 +215,7 @@ def _serialize_album_row(a) -> dict:
 
 
 def _serialize_track_row(t) -> dict:
-    """Common track-list-item shape shared by /api/genre/{id} and the home
-    page's genre-affinity row. Expects the track pre-joined with Album and
-    Artist — see ``_tracks_with_relations``."""
+    """Common track-list-item shape. Expects the track pre-joined with Album and Artist."""
     return {
         "id": str(t.id),
         "album_id": str(t.album.id),
@@ -248,8 +228,7 @@ def _serialize_track_row(t) -> dict:
 
 
 def _tracks_with_relations(where_clause=None, limit: int | None = None):
-    """Track query pre-joined with Album and Artist — the shape
-    ``_serialize_track_row`` expects."""
+    """Track query joined with Album and Artist."""
     query = Track.select(Track, Album, Artist).join(Album).switch(Track).join(Artist)
     scope = _library_scope()
     if scope is not None:
@@ -262,8 +241,8 @@ def _tracks_with_relations(where_clause=None, limit: int | None = None):
 
 
 def _albums_with_aggregates(where_clause=None, limit: int | None = None, order_by=None):
-    """Album query pre-joined with Artist and Track count/duration
-    aggregates — the shape ``_serialize_album_row`` expects."""
+    """Album query joined with Artist and Track count/duration
+    aggregates."""
     query = (Album.select(
                  Album, Artist,
                  fn.COUNT(Track.id).alias("track_count"),
@@ -286,9 +265,7 @@ def _albums_with_aggregates(where_clause=None, limit: int | None = None, order_b
 
 
 def _serialize_albums_in_order(album_ids: list[str]) -> list[dict]:
-    """Bulk-fetch + serialize albums, preserving album_ids' order — the
-    resolve-ids-then-serialize shape shared by every id-ranking helper
-    (similar-by-genre, and the home page's recently played/added/random)."""
+    """Bulk-fetch + serialize albums, preserving the album_ids order."""
     if not album_ids:
         return []
     by_id = {a.id: a for a in _albums_with_aggregates(where_clause=(Album.id << album_ids))}
@@ -326,12 +303,7 @@ def _more_by_artist(album_id: str, artist_id: str | None, cap: int = 20) -> list
 
 
 def _similar_albums_by_genre(album_id: str, exclude_artist_id: str | None, cap: int = 20) -> list[dict]:
-    """Other albums ranked by shared-genre overlap (weighted by how strongly
-    both albums are tagged with each shared genre). A placeholder for a
-    future audio-based similarity engine (see PLANNING.md's discovery-engine
-    notes) — kept as its own function precisely so that swap doesn't touch
-    the API shape or the "more by artist" section above.
-    """
+    """Other albums ranked by shared-genre overlap. Will eventually incorporate audio analysis."""
     this_weight: dict[str, int] = {}
     for row in (AlbumGenre.select(AlbumGenre.genre.alias("gid"), AlbumGenre.weight.alias("w"))
                 .where(AlbumGenre.album == album_id).dicts()):
@@ -365,11 +337,7 @@ def _similar_albums_by_genre(album_id: str, exclude_artist_id: str | None, cap: 
 
 
 def _appears_on_albums(artist_id: str, cap: int = 20) -> list[dict]:
-    """Albums where this artist is credited on at least one track but isn't
-    the album's own artist — compilations, samplers, guest features (this is
-    also how a "feat. X" credit that Jellyfin resolved to its own artist
-    entity surfaces X's contribution, since that entity is never an album's
-    ``artist``)."""
+    """Albums where this artist is credited on at least one track, mostly compilations."""
     query = (Track.select(Track.album)
              .join(Album, on=(Track.album == Album.id))
              .where(Track.artist == artist_id, Album.artist != artist_id))
@@ -386,12 +354,7 @@ def _appears_on_albums(artist_id: str, cap: int = 20) -> list[dict]:
 
 
 def _artist_genre_weights(artist_id: str) -> dict[str, int]:
-    """This artist's genre profile: direct ArtistGenre links plus whatever
-    their own albums are tagged with (same union ``_artist_genres`` uses for
-    the detail-page chips). ArtistGenre alone can be sparse — it's only
-    populated from a separate Last.fm/MusicBrainz artist-level lookup — so
-    album tags fill the gap and keep this in sync even right after an
-    album's artist assignment gets corrected."""
+    """Combined artist/album genre weights."""
     weight: dict[str, int] = {}
     for row in (ArtistGenre.select(ArtistGenre.genre.alias("gid"), ArtistGenre.weight.alias("w"))
                 .where(ArtistGenre.artist == artist_id).dicts()):
@@ -406,9 +369,7 @@ def _artist_genre_weights(artist_id: str) -> dict[str, int]:
 
 
 def _similar_artists_by_genre(artist_id: str, cap: int = 20) -> list[dict]:
-    """Other artists ranked by shared-genre overlap — the artist-page mirror
-    of ``_similar_albums_by_genre``. Candidates are scored from both their
-    direct ArtistGenre links and their own albums' genres, same as above."""
+    """Similar artists, ranked by genre overlap. Will eventually incorporate audio analysis."""
     this_weight = _artist_genre_weights(artist_id)
     if not this_weight:
         return []
@@ -442,11 +403,7 @@ def _similar_artists_by_genre(artist_id: str, cap: int = 20) -> list[dict]:
 
     artists_by_id = {a.id: a for a in _artists_with_aggregates(where_clause=(Artist.id << ordered_ids))}
 
-    # Skip guest-credit-only entities (no album of their own — e.g. a "X feat.
-    # Y" credit Jellyfin resolved to its own artist row) and dedup by name:
-    # the same root cause the AlbumArtists sync fix addresses for albums can
-    # otherwise surface a "feat." entity as its own "similar artist" result,
-    # sometimes alongside the real artist it's a duplicate of.
+    # Skip guest credit entries that are just one album by one artist, since those aren't really "similar" artists.
     results: list[dict] = []
     seen_names: set[str] = set()
     for aid in ordered_ids:
@@ -496,24 +453,19 @@ def get_tracks(sort_by: str = "title", sort_order: str = "asc",
     ]
 
 
-# ---------------------------------------------------------------------------
-# Home page
-# ---------------------------------------------------------------------------
+# Homepage
 
 _HOME_ROW_LIMIT = 20
-_MIN_SMART_ROW_ITEMS = 3     # a pool must have at least this many items to become a row
-_MIN_GENRE_ROW_ARTISTS = 4   # a genre_affinity track row must span more than this many
-                              # distinct artists, or it reads as "more of one artist" rather
-                              # than an actual genre recommendation
-_AFFINITY_WINDOW = 200       # most-recent PlayHistory rows sampled for weighted seed picks
-_AFFINITY_MIN_LIBRARY_TRACKS = 125  # PLANNING.md: "suppress discovery UI below ~100-150 tracks"
+_MIN_SMART_ROW_ITEMS = 3 # A pool must have at least this many items to become a row
+_MIN_GENRE_ROW_ARTISTS = 4 # A genre_affinity track row must span more than this many artists to be considered "diverse" enough to show
+_AFFINITY_WINDOW = 200 # How many plays to look back when creating history-based rows.
+_AFFINITY_MIN_LIBRARY_TRACKS = 125  # Suppress discovery UI when the library doesn't have a lot of tracks.
 _HERO_CANDIDATE_MIN = 5
 _HERO_CANDIDATE_MAX = 8
 
 
 def _recent_play_ids(group_field) -> list[str]:
-    """Distinct ids for ``group_field`` (Track.album or Track.artist), most
-    recently played first."""
+    """Distinct ids for group_field."""
     query = (PlayHistory
              .select(group_field.alias("eid"), fn.MAX(PlayHistory.played_at).alias("w"))
              .join(Track, on=(PlayHistory.track == Track.id)))
@@ -529,8 +481,7 @@ def _recent_play_ids(group_field) -> list[str]:
 
 
 def _recently_added_album_ids(limit: int = _HOME_ROW_LIMIT) -> list[str]:
-    """Album ids ordered by MAX(Track.added_at) desc — same grouping shape as
-    _recent_play_ids, just off Track.added_at instead of PlayHistory."""
+    """Album ids ordered by MAX(Track.added_at) descending."""
     query = Track.select(Track.album.alias("eid"), fn.MAX(Track.added_at).alias("w")).where(
         Track.added_at.is_null(False))
     scope = _library_scope()
@@ -545,12 +496,7 @@ def _recently_added_album_ids(limit: int = _HOME_ROW_LIMIT) -> list[str]:
 
 
 def _weighted_recent_ids(id_field, k: int, window: int = _AFFINITY_WINDOW) -> list[str]:
-    """Up to k distinct ids (artist or album, via id_field), weighted-sampled
-    without replacement by their share of plays in the most recent `window`
-    PlayHistory rows. Powers "Because you listened to X": the seed is more
-    likely to be whoever you've actually been playing a lot lately, and
-    *which* one gets picked varies run to run instead of being pinned to
-    literally the last thing played."""
+    """Up to k distinct ids (artist or album, via id_field), weighted based on number of plays."""
     recent = list(PlayHistory
                   .select(id_field.alias("eid"))
                   .join(Track, on=(PlayHistory.track == Track.id))
@@ -573,9 +519,7 @@ def _weighted_recent_ids(id_field, k: int, window: int = _AFFINITY_WINDOW) -> li
 
 
 def _weighted_recent_genres(k: int, window: int = _AFFINITY_WINDOW) -> list[dict]:
-    """Up to k distinct genres, weighted-sampled the same way as
-    _weighted_recent_ids, but off the *albums* of recently played tracks
-    (there's no per-track genre link — only AlbumGenre/ArtistGenre exist)."""
+    """Up to k distinct genres, weighted based on the number of plays."""
     recent_album_ids = list(dict.fromkeys(
         r["aid"] for r in (PlayHistory
                            .select(Track.album.alias("aid"))
@@ -611,10 +555,7 @@ def _weighted_recent_genres(k: int, window: int = _AFFINITY_WINDOW) -> list[dict
 
 
 def _similar_artist_albums(seed_artist_id: str, cap: int) -> list[dict]:
-    """One representative (highest-rated) album per genre-similar artist —
-    the album-flavored version of _similar_artists_by_genre, for rows where
-    an album (playable/browsable in one click) is more useful than an artist
-    card (which just navigates to the artist page)."""
+    """One representative album per genre-similar artist."""
     albums: list[dict] = []
     for artist_row in _similar_artists_by_genre(seed_artist_id, cap=cap):
         candidates = _albums_with_aggregates(
@@ -628,9 +569,7 @@ def _similar_artist_albums(seed_artist_id: str, cap: int) -> list[dict]:
 
 
 def _artist_affinity_seed_album(seed_artist_id: str, exclude_ids: set) -> dict | None:
-    """One album by an artist similar (genre-overlap) to seed_artist_id —
-    the hero's "Because you listened to X" candidate: the similar artist's
-    highest-rated album."""
+    """Select a seed album for an artist, same as above."""
     for artist_row in _similar_artists_by_genre(seed_artist_id, cap=5):
         albums = _albums_with_aggregates(
             where_clause=(Album.artist == artist_row["id"]), order_by=fn.Random(), limit=1
@@ -651,16 +590,8 @@ def _hero_candidate(reason_kind: str, reason_label: str, album: dict) -> dict:
 
 @router.get("/api/home")
 def get_home():
-    """Recently Played and Recently Added always first, then as many "smart"
-    rows as the library can support (see _smart_row_count), drawn from a
-    shuffled pool of affinity/rating/random candidates so both which rows
-    appear and their order vary between loads. The hero cycles through a
-    similarly shuffled pool of reasoned album candidates.
-
-    Affinity rows (because-you-listened-to-artist/genre) are gated behind
-    _AFFINITY_MIN_LIBRARY_TRACKS, per PLANNING.md's discovery-UX convention
-    of suppressing discovery surfaces on libraries too small for them to
-    mean anything.
+    """Generate the home page content.
+    Recently Played and Recently Added always first, then as many "smart" rows as the library can support.
     """
     _home_tracks_query = Track.select()
     _home_scope = _library_scope()
@@ -684,13 +615,7 @@ def get_home():
     random_album_ids = [a.id for a in random_albums_query.order_by(fn.Random()).limit(_HOME_ROW_LIMIT)]
     random_albums = _serialize_albums_in_order(random_album_ids)
 
-    # ---- affinity pools (gated on library size) ----
-    # artist_affinity rows show albums (one per similar artist) rather than
-    # artist cards, and genre_affinity rows show tracks rather than albums —
-    # both are one click closer to actually playing something than the
-    # entity type they're "about". genre_hero_albums tracks one representative
-    # album per genre pick separately, since the hero always shows an album
-    # (not a track) regardless of what the row itself displays.
+    # Affinity pools
     artist_affinity_rows: list[dict] = []
     artist_affinity_names: dict[str, str] = {}
     genre_affinity_rows: list[dict] = []
@@ -729,7 +654,6 @@ def get_home():
                 for a in top_album:
                     genre_hero_albums.append(("genre_affinity", title, _serialize_album_row(a)))
 
-    # ---- rows: two fixed, then a shuffled draw from every eligible pool ----
     rows = [
         _row("recently_played", "Recently Played", "album", recently_played_albums),
         _row("recently_added", "Recently Added", "album", recently_added_albums),
@@ -747,7 +671,6 @@ def get_home():
     smart_row_count = max(3, min(8, 3 + total_tracks // 300))
     rows.extend(candidate_rows[:smart_row_count])
 
-    # ---- hero candidates: shuffled pool, deduped by album id ----
     hero_pool: list[tuple[str, str, dict]] = []
     for a in recently_played_albums[:2]:
         hero_pool.append(("recently_played", "Recently Played", a))
@@ -790,9 +713,7 @@ def get_home():
     return {"hero_candidates": hero_candidates, "rows": rows}
 
 
-# ---------------------------------------------------------------------------
-# Detail pages
-# ---------------------------------------------------------------------------
+# Detail Pages
 
 @router.get("/api/album/{album_id}")
 def get_album_details(album_id: str):
@@ -866,11 +787,7 @@ def get_artist_details(artist_id: str):
     artist = Artist.get_or_none(Artist.id == artist_id)
     if not artist:
         raise HTTPException(status_code=404, detail="Artist not found")
-
-    # Routed through the scoped builder (not a raw Album.select()) so an
-    # album with zero remaining in-scope tracks drops out here the same way
-    # it does everywhere else -- it also gives each album its total_ms for
-    # free, so no separate duration query is needed.
+    
     artist_albums = list(_albums_with_aggregates(
         where_clause=(Album.artist == artist.id), order_by=Album.release_year.desc()
     ))
@@ -1001,9 +918,7 @@ def get_genre_details(genre_id: str):
     }
 
 
-# ---------------------------------------------------------------------------
 # Ratings
-# ---------------------------------------------------------------------------
 
 def _get_rated_item(model, item_id: str, label: str):
     item = model.get_or_none(model.id == item_id)
@@ -1040,9 +955,7 @@ def update_track_rating(track_id: str, rating: int = Body(..., embed=True)):
     return _set_rating(_get_rated_item(Track, track_id, "Track"), rating)
 
 
-# ---------------------------------------------------------------------------
 # Lyrics
-# ---------------------------------------------------------------------------
 
 @router.get("/api/track/{track_id}/lyrics")
 def get_track_lyrics(track_id: str, force: bool = False):

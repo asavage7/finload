@@ -1,7 +1,4 @@
-"""Generic background-job routes: start / status / live progress, keyed by
-job name (see the ``state.jobs`` registry). One set of routes for every
-``BackgroundJob`` instead of bespoke start/status/websocket endpoints per job.
-"""
+"""Generic background-job routes: start / status / live progress."""
 import asyncio
 
 from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconnect
@@ -19,9 +16,7 @@ def _get_job(name: str):
 
 
 def _start(job, name: str, force: bool):
-    # Sync also needs the active provider threaded through; every other job
-    # just re-enriches everything un-enriched (or, with force, everything
-    # already enriched too).
+    # Sync also needs the active provider threaded through
     if name == "sync":
         return job.start(state.provider, force=force)
     return job.start(force=force)
@@ -30,10 +25,7 @@ def _start(job, name: str, force: bool):
 @router.get("/api/jobs")
 def list_jobs():
     """Every registered job's name, live state, and force-rerun capability.
-
-    Display metadata (label, description, which settings gate enables it)
-    lives entirely in the frontend's settings schema now, so the Tasks UI
-    stays in sync with schema edits without touching this file."""
+    Display metadata lives in /src/lib/settings-schema.json."""
     return {"jobs": [
         {"name": name, "supports_force": job.supports_force, "state": job.state}
         for name, job in state.jobs.items()

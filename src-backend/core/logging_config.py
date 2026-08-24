@@ -1,14 +1,4 @@
-"""Application logging.
-
-An installed copy is launched from a desktop entry, so the sidecar's stdout goes
-somewhere the user can't reach; a bug report can then only ever say "it broke".
-Records go to both a file and stdout, so `npm run dev:backend` still prints to
-the terminal while an installed copy leaves something on disk to attach to an
-issue.
-
-The file lives beside the database in the user data dir, which is already the
-one directory the app is guaranteed to be able to write to.
-"""
+"""Application logging."""
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
@@ -17,9 +7,7 @@ from core.config import get_data_dir
 
 LOG_FILENAME = "finload.log"
 
-# Small enough that a user can attach one to an issue, with a couple of previous
-# runs kept so a crash isn't immediately rotated away by the restart after it.
-_MAX_BYTES = 1_000_000
+_MAX_BYTES = 1_000_000 # 1 MB
 _BACKUP_COUNT = 3
 
 _configured = False
@@ -30,7 +18,7 @@ def log_path():
 
 
 def setup_logging(level=logging.INFO):
-    """Attach the file and stream handlers to the root logger. Idempotent."""
+    """Attach the file and stream handlers to the root logger."""
     global _configured
     if _configured:
         return
@@ -48,8 +36,7 @@ def setup_logging(level=logging.INFO):
     stream.setFormatter(formatter)
     root.addHandler(stream)
 
-    # A read-only or missing data dir must not stop the app from starting, so a
-    # failure here leaves stdout logging in place rather than raising.
+    # Don't kill the app if logging to file fails
     try:
         path = log_path()
         path.parent.mkdir(parents=True, exist_ok=True)

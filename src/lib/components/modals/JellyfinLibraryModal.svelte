@@ -101,7 +101,7 @@
         </p>
         {#if applying}
             <p class="text-xs text-blue-400 mt-1">
-                Still applying your last change — see Library Sync in Tasks.
+                Changes are still applying. Check library sync for progress.
             </p>
         {/if}
     </div>

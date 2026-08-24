@@ -6,34 +6,10 @@ from pathlib import Path
 from platformdirs import user_data_dir
 from dotenv import load_dotenv
 
-# Single source of truth for how the app identifies itself, both to external
-# services (User-Agent) and to media servers (client name/version).
+# User agent identifiers. Version is automatically set from scripts/set-version.mjs
 APP_NAME = "Finload"
 APP_VERSION = "0.1.2"
 USER_AGENT = f"{APP_NAME.lower()}/{APP_VERSION}"
-
-
-def _find_env_file() -> Path | None:
-    candidates = []
-
-    if getattr(sys, "frozen", False):
-        # PyInstaller bundle: look next to the executable, then in user data dir.
-        candidates.append(Path(sys.executable).parent / ".env")
-        candidates.append(Path(user_data_dir("finload")) / ".env")
-    else:
-        # Dev: look two levels up from this file (i.e. finload-new/.env).
-        candidates.append(Path(__file__).resolve().parents[1] / ".env")
-
-    return next((p for p in candidates if p.exists()), None)
-
-
-try:
-    _env_path = _find_env_file()
-    if _env_path:
-        load_dotenv(dotenv_path=str(_env_path))
-except Exception:
-    # Don't fail import; environment variables may be provided by the process.
-    pass
 
 
 def _split_csv(value: str | None, default: list[str]) -> list[str]:
@@ -74,11 +50,7 @@ def get_data_dir() -> Path:
 
 
 def get_library_source() -> str:
-    """The user's chosen library source, read straight from settings.json.
-
-    Read from disk (rather than via SettingsManager) so ``get_database_path``
-    can resolve the per-source DB file at import time, before any managers exist.
-    """
+    """Gets the user's chosen library source from onboarding/settings."""
     try:
         with open(get_data_dir() / "settings.json", "r") as fh:
             data = json.load(fh)
@@ -89,25 +61,22 @@ def get_library_source() -> str:
 
 
 def get_database_path(source: str | None = None) -> Path:
-    """Path to the SQLite file for a library source.
-
-    Each source gets its own database so switching between, say, Jellyfin and a
-    local library doesn't wipe and re-sync the other one. An explicit
-    ``DATABASE_PATH`` override still pins a single file (handy for dev/tests).
-    """
+    """Gets the database path based on the chosen library source."""
     data_dir = get_data_dir()
     override = os.getenv("DATABASE_PATH", "").strip()
+    
+    if source is None:
+        source = get_library_source()
+    
+    def get_filename(source: str | None) -> str:
+        return f"library_{source}.db"
 
     if override:
         path = Path(override).expanduser()
         if path.suffix.lower() != ".db":
-            path = path / "jelly_local.db"
+            path = path / get_filename(source)
     else:
-        if source is None:
-            source = get_library_source()
-        # Keep the historical filename for Jellyfin so existing installs keep
-        # their library; give every other source its own file.
-        filename = "jelly_local.db" if source == "jellyfin" else f"library_{source}.db"
+        filename = get_filename(source)
         path = data_dir / filename
 
     path.parent.mkdir(parents=True, exist_ok=True)

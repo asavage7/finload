@@ -6,15 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A new push to a branch makes the in-flight run for that branch pointless.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Every job pins ubuntu-24.04 rather than ubuntu-latest: 22.04 ships mpv 0.34
-# (libmpv.so.1), while the deb declares a dependency on libmpv2 (libmpv.so.2),
-# which only exists from 24.04 on. Pinning also keeps the glibc floor of the
-# release bundles from moving under us when the "latest" label rolls forward.
+# Pin to Ubuntu 24.04 to confirm minimum support
 jobs:
   frontend:
     name: Frontend (check + build)
@@ -29,11 +25,8 @@ jobs:
 
       - run: npm ci
 
-      # svelte-check: fails the job on type errors. Warnings do not fail it.
+      # run svelte-check and vite build
       - run: npm run check
-
-      # Catches build-time failures (bad imports, Vite/Tailwind config) that
-      # type-checking alone does not.
       - run: npm run build
 
   backend:
@@ -48,8 +41,7 @@ jobs:
           cache: pip
           cache-dependency-path: src-backend/requirements.txt
 
-      # python-mpv resolves libmpv.so.2 through ctypes at import time, so the
-      # import smoke test below needs the real library present.
+      # Import smoke test for MPV
       - name: Install libmpv
         run: |
           sudo apt-get update
@@ -60,11 +52,7 @@ jobs:
       - name: Byte-compile every module
         run: python -m compileall -q src-backend
 
-      # Importing main.py builds the FastAPI app and wires every router, so this
-      # catches missing dependencies and broken imports that compileall cannot.
-      # The mpv core itself is created on the startup event, not at import, so no
-      # audio device is touched here. Data lands in a temp dir, not the runner's
-      # real user-data location.
+      # Check that all imports work correctly
       - name: Import the app
         working-directory: src-backend
         env:
@@ -96,14 +84,7 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # build.rs runs PyInstaller unless SKIP_PYINSTALLER is set *and* the backend
-      # executable already exists. A placeholder skips the multi-minute build that
-      # linting does not need; the release workflow builds the real one.
-      #
-      # The path has to match what build.rs checks exactly, which is the onedir
-      # layout binaries/backend/python-backend. If this drifts, build.rs decides
-      # the backend is missing and runs PyInstaller against a venv this job never
-      # creates, and the panic points at a missing venv rather than at this step.
+      # Tests without building the backend for CI
       - name: Stub the backend executable
         run: |
           mkdir -p src-tauri/binaries/backend
