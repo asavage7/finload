@@ -3,15 +3,9 @@
 [![CI](https://github.com/asavage7/finload/actions/workflows/ci.yml/badge.svg)](https://github.com/asavage7/finload/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-Finload is a sleek and easy to use Jellyfin music player, with the goal to provide a more Spotify-like experience with your personal music library.
+Finload is a next-gen elegant Jellyfin music client, with a custom discovery algorithm built to let you re-live your library.
 
-**Finload is nearing a beta-ready state with most major features working as intended.**
-
-## AI Usage
-
-**The UI and logo of Finload are not, and will never be, AI generated.**
-
-However, parts of Finload were created with the help of artificial intelligence. While care is taken to ensure code remains well-tested, documented, and free of infringing works, these items cannot be guaranteed.
+**Finload is currently in beta. Give it a shot! If you run into problems, feel free to [open an issue](https://github.com/asavage7/finload/issues).**
 
 
 ## Screenshots
@@ -23,11 +17,21 @@ However, parts of Finload were created with the help of artificial intelligence.
 
 ![Home page showing recommendation rows and the lyrics panel](docs/app3.png)
 
+## Why Finload?
+
+Finload is a next-gen client built around music discovery. Sync your library, and Finload automatically builds a custom experience around your tastes.
+- Get custom recommendations based on your listening history.
+- Start radio from an Artist/Album and get songs that *feel* similar, not just share the same genre.
+- Turn on Autoplay and keep the music going forever. Autoplay queues up 3 songs at a time and reacts to skips, queued songs, and your play history to keep things feeling tailored and fresh.
+- Browse your library with Finload's functional but incredibly elegant UI.
+
+### How it Works
+Finload analyzes your music directly using to extract acoustic similarites between songs. It combines this with genre tags and your listening history to curate the perfect collection of songs. Finload even takes into account how you interact with songs day-to-day to match your tastes. 
+
 ## Features
 
-- Onboarding Sequence
-- Sync library from Jellyfin or local files
-- Homepage with auto-generated recommendations based on listening history
+- Jellyfin & Local Folder Support
+- Responsive Homepage tailored to your library
 - Library view (grid and list)
 - Detail pages for albums, artists, playlists, and genres
 - Playlists
@@ -40,16 +44,11 @@ However, parts of Finload were created with the help of artificial intelligence.
 
 **This is not an exhaustive list.**
 
-### Known Issues
+## AI Usage
 
-- Switching between Jellyfin and Local files requires a restart to clear database issues
-- Discovery algorithm needs tweaked, especially for isolated genres
-- Library tabs sometimes need to be scrolled for content to appear
-- Volume UI needs tweaked
-- Autoplay toggle does not persist on queue clear
-- Volume normalization does not adjust volume of non-normalized tracks, causing them to be much louder
-- WebKitGTK has different blur rendering than Firefox/Chromium, causing odd blur behaviors. 
-- Some settings toggles are not fully functional.
+**The UI, product design, and logo of Finload are not, and will never be, AI generated.**
+
+However, AI tools have been used in Finload's development. Care is taken to ensure code is readable, well-tested, and free of errors. Files that contain mostly AI-generated code are marked accordingly. Core application logic is currently being rewritten to reduce AI usage where appropriate.
 
 ## Install
 

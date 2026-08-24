@@ -17,7 +17,7 @@ import os
 from core.config import get_database_path
 from core.migrations import SCHEMA_VERSION, ensure_model_columns, run_migrations, stable_genre_id
 
-# Let APIs process read requests even if the database is being writen to. Low risk in this use case.
+# WAL allows reads during writes, and each worker needs its own connection.
 _DB_PRAGMAS = {'foreign_keys': 1, 'journal_mode': 'wal', 'busy_timeout': 30000}
 
 db = SqliteDatabase(
