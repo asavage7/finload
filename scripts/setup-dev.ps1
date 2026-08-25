@@ -8,33 +8,8 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "=== Finload Dev Setup (Windows) ===" -ForegroundColor Cyan
 
-# ── mpv ────────────────────────────────────────────────────────────────────────
-Write-Host ""
-Write-Host "→ Checking for mpv (required for audio playback)..." -ForegroundColor Yellow
-$mpvDll = $null
-$mpvSearchPaths = @(
-    "C:\Program Files\mpv\mpv-2.dll",
-    "C:\Program Files (x86)\mpv\mpv-2.dll",
-    "C:\ProgramData\chocolatey\lib\mpv.install\tools\mpv-2.dll",
-    "C:\ProgramData\scoop\apps\mpv\current\mpv-2.dll"
-)
-foreach ($p in $mpvSearchPaths) {
-    if (Test-Path $p) { $mpvDll = $p; break }
-}
-if (-not $mpvDll) {
-    Write-Host "  mpv not found. Installing via winget..." -ForegroundColor Yellow
-    winget install --id mpv.mpv -e --silent
-    # Re-check after install
-    foreach ($p in $mpvSearchPaths) {
-        if (Test-Path $p) { $mpvDll = $p; break }
-    }
-}
-if ($mpvDll) {
-    Write-Host "  Found mpv-2.dll at: $mpvDll" -ForegroundColor Green
-} else {
-    Write-Host "  WARNING: mpv-2.dll still not found. Audio will not work in the bundled app." -ForegroundColor Red
-    Write-Host "  Install mpv manually from https://mpv.io/installation/ and add it to PATH." -ForegroundColor Red
-}
+$root = Split-Path -Parent $PSScriptRoot
+Set-Location $root
 
 # ── Rust ───────────────────────────────────────────────────────────────────────
 Write-Host ""
@@ -53,8 +28,6 @@ Write-Host "  Rust found: $(cargo --version)" -ForegroundColor Green
 # ── Python venv ────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "→ Setting up Python virtual environment..." -ForegroundColor Yellow
-$root = Split-Path -Parent $PSScriptRoot
-Set-Location $root
 python -m venv src-backend\.venv
 & src-backend\.venv\Scripts\pip install --upgrade pip -q
 & src-backend\.venv\Scripts\pip install -r src-backend\requirements.txt -q
@@ -64,6 +37,18 @@ Write-Host "  Done." -ForegroundColor Green
 Write-Host ""
 Write-Host "→ Installing Node.js packages..." -ForegroundColor Yellow
 npm install
+Write-Host "  Done." -ForegroundColor Green
+
+# ── mpv ────────────────────────────────────────────────────────────────────────
+# A pinned mpv build is vendored rather than installed system-wide, so every
+# dev machine and CI run bundles the exact same binary -- see
+# scripts/fetch-mpv-windows.mjs for why (winget/choco/scoop installs land in
+# different places with different filenames depending on distributor and
+# version). Needs the npm install above for 7zip-min, which the script uses
+# to unpack the archive.
+Write-Host ""
+Write-Host "→ Vendoring mpv (required for audio playback)..." -ForegroundColor Yellow
+node scripts\fetch-mpv-windows.mjs
 Write-Host "  Done." -ForegroundColor Green
 
 Write-Host ""

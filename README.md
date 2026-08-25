@@ -57,7 +57,7 @@ However, AI tools have been used in Finload's development. Care is taken to ensu
 
 ## Install
 
-Download finload from the [releases page](https://github.com/asavage7/finload/releases). Linux (x64) is the only supported platform at the moment, however Windows and Linux ARM support are planned.
+Download finload from the [releases page](https://github.com/asavage7/finload/releases). Linux (x64) and Windows (x64) are supported; Linux ARM support is planned.
 
 **Debian / Ubuntu**:
 
@@ -78,6 +78,10 @@ chmod +x finload_<version>_amd64.AppImage
 ./finload_<version>_amd64.AppImage
 ```
 
+**Windows:**
+
+Run `finload_<version>_x64-setup.exe`. mpv is bundled in, so there's nothing extra to install.
+
 Initial sync, enrichment, and audio processing can take a while on large libraries. The app is still fully functional during this time, but recommendations will improve as more songs are analyzed.
 
 ## Development
@@ -91,7 +95,7 @@ Initial sync, enrichment, and audio processing can take a while on large librari
 
 ### Setup
 
-Run the setup script for your platform. This installs system dependencies, creates the Python venv, and runs `npm install`:
+Run the setup script for your platform. This installs system dependencies, creates the Python venv, and runs `npm install` (on Windows, it also installs MPV):
 
 ```bash
 # Linux / macOS

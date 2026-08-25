@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
   import ViewLayout from "$lib/components/ViewLayout.svelte";
   import BackButton from "$lib/components/ui/BackButton.svelte";
   import IconButton from "$lib/components/ui/IconButton.svelte";
@@ -11,6 +12,7 @@
     IconPlayerPlay,
     IconMicrophone2,
     IconRadio,
+    IconArrowsExchange,
   } from "@tabler/icons-svelte";
   import JobCard from "$lib/components/JobCard.svelte";
   import JellyfinLibraryModal from "$lib/components/modals/JellyfinLibraryModal.svelte";
@@ -67,11 +69,16 @@
     playback: IconPlayerPlay,
     lyrics: IconMicrophone2,
     radio: IconRadio,
+    sharing: IconArrowsExchange,
   };
 
   let values: Record<string, unknown> = {};
   let loaded = false;
   let libraryModalOpen = false;
+
+  // Result/error text shown under an "action" setting's description, keyed
+  // by setting key. Currently only used by the feature export/import actions.
+  let actionStatus: Record<string, string> = {};
 
   let jobs: JobInfo[] = [];
   let jobsLoaded = false;
@@ -295,9 +302,93 @@
     }
   }
 
+  // Stopgap analysis-data sharing (see src-backend/services/feature_transfer.py):
+  // trades a JSON file of already-computed audio-analysis features between
+  // installs so a fresh one doesn't have to re-run DSP analysis on tracks
+  // someone else already processed.
+  async function exportFeatures() {
+    let path: string | null = null;
+    try {
+      path = await saveFileDialog({
+        title: "Export analysis data",
+        defaultPath: "finload-features.json",
+        filters: [{ name: "Finload feature export", extensions: ["json"] }],
+      });
+    } catch {
+      // Not running under the Tauri webview
+    }
+    if (!path) return;
+
+    actionStatus = { ...actionStatus, export_features: "Exporting…" };
+    try {
+      const res = await fetch(apiUrl("/api/features/export"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      const data = await res.json();
+      actionStatus = {
+        ...actionStatus,
+        export_features: res.ok
+          ? `Exported analysis data for ${data.exported} tracks.`
+          : `Export failed: ${data.detail ?? "unknown error"}`,
+      };
+    } catch (e) {
+      actionStatus = {
+        ...actionStatus,
+        export_features: `Export failed: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+  }
+
+  async function importFeatures() {
+    let path: string | null = null;
+    try {
+      const selected = await openFileDialog({
+        title: "Import analysis data",
+        multiple: false,
+        filters: [{ name: "Finload feature export", extensions: ["json"] }],
+      });
+      path = typeof selected === "string" ? selected : null;
+    } catch {
+      // Not running under the Tauri webview
+    }
+    if (!path) return;
+
+    actionStatus = { ...actionStatus, import_features: "Importing…" };
+    try {
+      const res = await fetch(apiUrl("/api/features/import"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        actionStatus = { ...actionStatus, import_features: `Import failed: ${data.detail ?? "unknown error"}` };
+      } else if (data.version_mismatch) {
+        actionStatus = {
+          ...actionStatus,
+          import_features: "That export was made with a different analysis version, so it was skipped.",
+        };
+      } else {
+        actionStatus = {
+          ...actionStatus,
+          import_features: `Imported analysis data for ${data.imported} of ${data.total} tracks.`,
+        };
+      }
+    } catch (e) {
+      actionStatus = {
+        ...actionStatus,
+        import_features: `Import failed: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+  }
+
   const settingActions: Record<string, () => void> = {
     rerun_setup: rerunSetup,
     manage_jellyfin_libraries: () => (libraryModalOpen = true),
+    export_features: exportFeatures,
+    import_features: importFeatures,
   };
 </script>
 
@@ -382,6 +473,11 @@
                                 class:mt-0.5={setting.label}
                               >
                                 {setting.description}
+                              </div>
+                            {/if}
+                            {#if setting.control === "action" && actionStatus[setting.key]}
+                              <div class="text-zinc-400 text-xs mt-1">
+                                {actionStatus[setting.key]}
                               </div>
                             {/if}
                           </div>

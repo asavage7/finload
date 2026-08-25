@@ -42,6 +42,11 @@ for pkg in ("uvicorn", "starlette"):
 
 mpv_dll = os.environ.get("FINLOAD_MPV_DLL")
 if mpv_dll:
+    # "." lands in _internal/, not next to the exe -- PyInstaller 6.x onedir
+    # bundles put every collected binary under _internal/, and sys._MEIPASS
+    # (what python-mpv's "next to my __file__" fallback resolves against)
+    # points there too, so the two agree and python-mpv finds it. Verified by
+    # actually running the frozen backend: import mpv succeeds at startup.
     binaries.append((mpv_dll, "."))
 
 a = Analysis(

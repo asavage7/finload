@@ -14,6 +14,7 @@ from core import state
 from core.config import get_backend_host, get_backend_port, get_cors_origins
 from routers import (
     accent_colors,
+    feature_transfer,
     history,
     images,
     jobs,
@@ -37,7 +38,7 @@ app.add_middleware(
 )
 
 for module in (library, search, images, accent_colors, playlists,
-               playback, settings, sync, jobs, history, quiz):
+               playback, settings, sync, jobs, history, quiz, feature_transfer):
     app.include_router(module.router)
 
 
@@ -66,4 +67,15 @@ def on_startup():
 
 
 if __name__ == "__main__":
+    # Required first call for a frozen (PyInstaller) executable that uses
+    # multiprocessing (services/audio_analysis.py's worker pool). Windows has
+    # no fork(), so spawning a worker re-executes this frozen exe from
+    # scratch; without freeze_support() intercepting that re-exec, the worker
+    # falls through to uvicorn.run() below just like the real process did,
+    # starting a second full server that can itself spawn more workers --
+    # each doing the same. Harmless/required no-op everywhere else.
+    import multiprocessing
+
+    multiprocessing.freeze_support()
+
     uvicorn.run(app, host=get_backend_host(), port=get_backend_port())

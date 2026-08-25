@@ -198,7 +198,23 @@ pub fn run() {
             // log file (see src-backend/logging_config.py), so there is no need
             // to drain a pipe to keep it from blocking on a full buffer, and a
             // terminal-launched dev run still shows its output directly.
-            let child = std::process::Command::new(&backend_exe)
+            let mut backend_cmd = std::process::Command::new(&backend_exe);
+
+            // python-backend.exe is a console-subsystem binary (finload.spec
+            // builds it with console=True, so its own stdio-inherited output is
+            // visible when launched from a terminal). Spawned from finload.exe --
+            // a GUI-subsystem process with no console of its own -- Windows would
+            // otherwise allocate a brand new console window for it, which flashes
+            // up behind the app on every launch. CREATE_NO_WINDOW suppresses that
+            // allocation without changing the exe itself.
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                backend_cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+
+            let child = backend_cmd
                 .spawn()
                 .unwrap_or_else(|e| panic!("failed to spawn the backend at {backend_exe:?}: {e}"));
 

@@ -100,3 +100,36 @@ jobs:
         env:
           SKIP_PYINSTALLER: "1"
         run: cargo clippy --all-targets -- -D warnings
+
+  rust-windows:
+    name: Rust (Windows build check)
+    # Catches breakage in the target_os = "windows" cfg paths (SMTC hwnd
+    # handoff in lib.rs, the mpv-dll lookup in build.rs, etc.) on every push,
+    # without paying for a full backend/bundle build -- the release workflow
+    # is what actually exercises those.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Stub the backend executable
+        run: |
+          mkdir src-tauri\binaries\backend
+          New-Item -ItemType File -Path src-tauri\binaries\backend\python-backend.exe | Out-Null
+
+      - name: rustfmt
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: clippy
+        working-directory: src-tauri
+        env:
+          SKIP_PYINSTALLER: "1"
+        run: cargo clippy --all-targets -- -D warnings
