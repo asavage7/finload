@@ -37,7 +37,10 @@ def init_playback():
 
 def switch_source():
     """Swap the provider and database to match the saved library source.
-    As with database switching, this is likely to be switched to an app restart in the future.
+
+    Only reached from the setup wizard, which is the only place the source can be
+    chosen. The app restarts into that wizard (see the settings page's re-run
+    action), so this always runs on a freshly started app with nothing playing.
     """
     global db, provider
     playback.stop_for_source_switch()

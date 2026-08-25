@@ -1,9 +1,6 @@
 <script lang="ts">
     import ViewLayout from "$lib/components/ViewLayout.svelte";
-    import {
-        IconMusicQuestion,
-        IconRun
-    } from "@tabler/icons-svelte";
+    import { IconMusicQuestion } from "@tabler/icons-svelte";
 </script>
 
 <ViewLayout>
@@ -22,16 +19,6 @@
                     <h2 class="text-xl font-semibold">Music Quiz</h2>
                     <p class="text-sm text-white/70">
                         Test your music knowledge.
-                    </p>
-                </a>
-                <a
-                    href="/extras/workout-playlist"
-                    class="bg-gradient-to-br from-green-700 to-cyan-800 hover:from-green-600 hover:to-cyan-700 border border-white/10 transition-colors rounded-lg p-4 flex flex-col gap-1 items-center justify-center text-center"
-                >
-                    <IconRun size=32 class="text-white"/>
-                    <h2 class="text-xl font-semibold">Workout Playlist Generator</h2>
-                    <p class="text-sm text-white/70">
-                        Make a playlist based on genre and BPM.
                     </p>
                 </a>
             </div>

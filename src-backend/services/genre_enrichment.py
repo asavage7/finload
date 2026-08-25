@@ -5,7 +5,7 @@ Per album/artist, preference order is:
      Jellyfin resolves these for most well-tagged libraries (see
      ``providers/jellyfin.py``'s ``ProviderIds`` fetch); local files don't
      have one yet since there's no audio-fingerprinting step. MusicBrainz
-     genres need no noise filtering — they're editor-curated, not folksonomy.
+     genres need no noise filtering - they're editor-curated, not folksonomy.
   2. Last.fm's crowd tags, filtered to drop noise (self-references, decades,
      nationalities, rating/list artifacts) and thresholded by tag count. Used
      whenever MusicBrainz had no MBID or returned nothing.
@@ -15,27 +15,23 @@ Both write into the same Genre/AlbumGenre/ArtistGenre tables via
 two never collide or overwrite each other. Tracks inherit their album's
 genres rather than being enriched individually.
 """
-import json
 import logging
 import re
-import threading
-import time
-import urllib.error
 import urllib.parse
-import urllib.request
 
-from core.config import USER_AGENT
-from core.database import Album, Artist, Track
+from core.database import Album, AlbumGenre, Artist, ArtistGenre, Track
+from core.http import RateLimiter, fetch_json
 from services.background import BackgroundJob
 
 logger = logging.getLogger(__name__)
-
-_REQUEST_TIMEOUT = 10
 
 _LASTFM_BASE_URL = "https://ws.audioscrobbler.com/2.0/"
 _MB_BASE_URL = "https://musicbrainz.org/ws/2"
 
 MIN_LASTFM_COUNT = 10
+
+# Consecutive unreachable-source failures before a run gives up for now.
+_UNREACHABLE_LIMIT = 5
 
 _DECADE_YEAR_RE = re.compile(r"^(19|20)\d{2}$|^\d{2}0?s$|^\d{4}s$")
 
@@ -47,21 +43,31 @@ _NATIONALITY_DENYLIST = {
     "icelandic", "belgian", "austrian", "uk", "usa", "new zealand",
 }
 
-# Exact (not substring) matches: tags that are junk on their own but would be
-# unsafe to match as a substring (e.g. "test" inside a real genre name).
-_EXACT_JUNK_NAMES = {"test", "testing", "tests", "aoty"}
+# Exact (not substring) matches: tags that are junk on their own but appear
+# inside real genre names ("own" in "motown", "concert" in "concerto").
+_EXACT_JUNK_NAMES = {
+    "test", "testing", "tests", "aoty", "own", "concert", "amazing", "awesome",
+    "beautiful", "weed", "playlist", "wishlist", "favorites", "favourites",
+}
 
-# Substrings matched case-insensitively anywhere in the tag: personal-list,
-# rating, and reaction artifacts, not genre descriptors.
-_JUNK_SUBSTRINGS = (
+# Matched on word boundaries anywhere in the tag: personal-list, rating, and
+# reaction artifacts, not genre descriptors.
+_JUNK_PHRASES = (
     "stars", "star rating", "5/5", "10/10", "favo",  # favourite/favorite/favoritos
-    "seen live", "concert", "live show",
-    "albums i", "artists i", "own", "wishlist", "to check", "to listen",
+    "seen live", "live show",
+    "albums i", "artists i", "i own", "wishlist", "to check", "to listen",
     "check out", "playlist", "love at first", "guilty pleasure",
-    "best of", "best albums", "top 100", "top 10", "amazing", "awesome", "beautiful",
-    "<3", "smoke weed", "weed", "male vocalist", "female vocalist", "scrobbl",
-    "1001 albums", "must hear" "must listen",
+    "best of", "best albums", "top 100", "top 10",
+    "<3", "smoke weed", "male vocalist", "female vocalist", "scrobbl",
+    "1001 albums", "must hear", "must listen",
 )
+
+# Leading \b only (and only where the phrase starts with a word character), so
+# "favo" still catches "favourites" while "own" can no longer eat "motown".
+_JUNK_RE = re.compile("|".join(
+    (rf"\b{re.escape(p)}" if p[0].isalnum() else re.escape(p))
+    for p in _JUNK_PHRASES
+), re.IGNORECASE)
 
 
 _LOOKUP_PUNCTUATION = str.maketrans({
@@ -76,7 +82,7 @@ _FEATURING_SPLIT = re.compile(r"\s+(?:feat\.|ft\.|&)\s+", re.IGNORECASE)
 
 
 def _normalize_for_lookup(name: str) -> str:
-    """Builds the artist name actually sent to Last.fm — stripped of
+    """Builds the artist name actually sent to Last.fm - stripped of
     featuring/collaboration credits, normalized to plain ASCII punctuation,
     and with any literal "+" pre-escaped, since Last.fm's own catalog
     doesn't match on any of those forms. Only used for the outgoing query
@@ -86,7 +92,7 @@ def _normalize_for_lookup(name: str) -> str:
     The "+" case is a genuine quirk on Last.fm's side, confirmed
     empirically: a normally-percent-encoded "+" (-> "%2B" via urlencode)
     gets rejected as "artist not found," but a *double*-encoded one
-    ("%252B", i.e. urlencode'ing the already-escaped "%2B") is accepted —
+    ("%252B", i.e. urlencode'ing the already-escaped "%2B") is accepted -
     matching Last.fm's own artist page for "+44", which is literally
     last.fm/music/%252B44.
     """
@@ -113,67 +119,36 @@ def _is_year_or_decade(tag: str) -> bool:
     return bool(_DECADE_YEAR_RE.match(t))
 
 
-def _is_junk(tag: str) -> bool:
-    t = tag.lower()
-    return any(sub in t for sub in _JUNK_SUBSTRINGS)
-
-
 def filter_lastfm_tags(tags: list[tuple[str, int]], artist_name: str,
                         min_count: int = MIN_LASTFM_COUNT) -> list[tuple[str, int]]:
     """Drop noise from raw Last.fm tags, keeping (name, count) pairs that look
-    like genuine genres. See the module docstring / PLANNING.md for the
-    real-data validation behind these rules."""
+    like genuine genres."""
     out = []
     for name, count in tags:
-        if count < min_count:
-            continue
-        if _is_year_or_decade(name):
-            continue
-        if name.strip().lower() in _NATIONALITY_DENYLIST:
-            continue
-        if name.strip().lower() in _EXACT_JUNK_NAMES:
-            continue
-        if _is_self_reference(name, artist_name):
-            continue
-        if _is_junk(name):
+        exact = name.strip().lower()
+        if (count < min_count
+                or _is_year_or_decade(name)
+                or exact in _NATIONALITY_DENYLIST
+                or exact in _EXACT_JUNK_NAMES
+                or _is_self_reference(name, artist_name)
+                or _JUNK_RE.search(name)):
             continue
         out.append((name, count))
     return out
 
 
-class _RateLimiter:
-    """Serializes calls so they're spaced at least ``min_interval`` seconds apart."""
-
-    def __init__(self, min_interval: float):
-        self.min_interval = min_interval
-        self._lock = threading.Lock()
-        self._last_call = 0.0
-
-    def wait(self):
-        with self._lock:
-            elapsed = time.monotonic() - self._last_call
-            if elapsed < self.min_interval:
-                time.sleep(self.min_interval - elapsed)
-            self._last_call = time.monotonic()
-
-
-# MusicBrainz mandates >=1 req/sec; Last.fm has no hard limit but this keeps
-# enrichment polite under sustained background use.
-_mb_limiter = _RateLimiter(1.05)
-_lastfm_limiter = _RateLimiter(0.25)
+# MusicBrainz caps at 1 req/sec and answers 503 on a burst, so this sits just
+# clear of the limit rather than on it. Last.fm has no hard limit, but this
+# keeps enrichment polite under sustained background use.
+_mb_limiter = RateLimiter(1.2)
+_lastfm_limiter = RateLimiter(0.25)
 
 
 def _lastfm_get(api_key: str, method: str, **params) -> dict:
     query = {"method": method, "api_key": api_key, "format": "json", **params}
     url = f"{_LASTFM_BASE_URL}?" + urllib.parse.urlencode(query)
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     _lastfm_limiter.wait()
-    try:
-        with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:
-        logger.warning("Last.fm request failed (%s): %s", method, exc)
-        return {}
+    return fetch_json(url) or {}
 
 
 def _lastfm_top_tags(data: dict) -> list[tuple[str, int]]:
@@ -183,17 +158,21 @@ def _lastfm_top_tags(data: dict) -> list[tuple[str, int]]:
     return [(t["name"], int(t.get("count", 0))) for t in tags if t.get("name")]
 
 
+class LookupFailed(Exception):
+    """A source was unreachable, as opposed to having nothing for this entity.
+    Raised so the caller leaves the entity un-enriched and retries it later."""
+
+
 def _mb_genres(entity_type: str, mbid: str) -> list[tuple[str, int]]:
-    """Curated genres for a MusicBrainz entity ("recording" | "release-group" | "artist")."""
+    """Curated genres for a MusicBrainz entity ("recording" | "release-group" |
+    "artist"). Raises LookupFailed if MusicBrainz could not be reached."""
     url = f"{_MB_BASE_URL}/{entity_type}/{mbid}?inc=genres&fmt=json"
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     _mb_limiter.wait()
-    try:
-        with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:
-        logger.warning("MusicBrainz request failed (%s/%s): %s", entity_type, mbid, exc)
-        return []
+    data = fetch_json(url)
+    if data is None:
+        # An empty list here would be indistinguishable from "no genres" and
+        # would fall through to Last.fm, permanently downgrading this entity.
+        raise LookupFailed(f"musicbrainz {entity_type} {mbid}")
     return [(g["name"], int(g.get("count", 0))) for g in (data.get("genres") or []) if g.get("name")]
 
 
@@ -204,7 +183,11 @@ class GenreEnrichmentManager(BackgroundJob):
         super().__init__()
         self._settings = settings
         self.db = db_manager
+        # artist id -> (genres, source) for artists handled in this run, plus
+        # (seeded from the DB unless forcing) ones a previous run already did.
         self._artist_cache: dict[str, tuple[list, str | None]] = {}
+        # album id -> ids of artists credited on its tracks (compilations).
+        self._track_artists: dict[str, set] = {}
 
     def start(self, force: bool = False) -> bool:
         if not self._settings.get("enable_genre_enrichment"):
@@ -216,48 +199,73 @@ class GenreEnrichmentManager(BackgroundJob):
     # ------------------------------------------------------------------
 
     def _run(self, force: bool = False) -> None:
-        self._artist_cache = {}
         api_key = (self._settings.get("lastfm_api_key") or "").strip()
-
+        # Joined so album.artist is already loaded; otherwise each album costs
+        # an extra query just to read its artist's name and mbid.
+        query = Album.select(Album, Artist).join(Artist)
         if force:
-            albums = list(Album.select())
+            self._artist_cache = {}
         else:
-            already_enriched = self._enriched_album_ids()
-            albums = [a for a in Album.select() if a.id not in already_enriched]
+            # A subquery, not a materialized id list: the latter would hit
+            # SQLite's bound-parameter limit on a large library.
+            query = query.where(Album.id.not_in(self._enriched(AlbumGenre, AlbumGenre.album)))
+            # Without this, every run re-queries MusicBrainz/Last.fm for artists
+            # a previous run already resolved.
+            self._artist_cache = {row[0]: ([], None) for row in
+                                  self._enriched(ArtistGenre, ArtistGenre.artist).tuples()}
+        albums = list(query)
+        self._track_artists = self._track_artists_by_album()
 
-        self._emit(total=len(albums), message="Gathering albums to enrich…")
+        self._emit(total=len(albums), message="Gathering albums to enrich...")
 
+        unreachable = 0
         for processed, album in enumerate(albums, start=1):
             if not self._settings.get("enable_genre_enrichment"):
-                # Setting turned off mid-run (same gate start() checks, and
-                # the schema's task row is disabled on) -- stop rather than
-                # keep working on a feature the user just turned off.
-                self._emit(status="idle", message="Stopped — disabled in settings")
+                # Setting turned off mid-run; stop rather than keep working on
+                # a feature the user just disabled.
+                self._emit(status="idle", message="Stopped - disabled in settings")
                 return
             self.wait_if_paused()
             try:
                 self._enrich_album(album, api_key)
+                unreachable = 0
+            except LookupFailed as e:
+                # The source is down, not this album's fault. It stays
+                # un-enriched, so the next run picks it up again.
+                unreachable += 1
+                logger.info("Deferring album %s: %s unreachable", album.id, e)
+                if unreachable >= _UNREACHABLE_LIMIT:
+                    # Everything is failing; stop rather than grind through the
+                    # library hammering a source that is already struggling.
+                    self._emit(status="error",
+                               message="Genre source unreachable - will retry later")
+                    return
             except Exception as e:
-                # One album's lookup/write failing (e.g. a transient SQLite
-                # "database is locked" under concurrent sync/enrichment
-                # writes) shouldn't abort enrichment for every album still
-                # queued behind it -- skip it and keep going; it's simply
-                # not in _enriched_album_ids() yet, so the next non-forced
-                # run retries it same as any other not-yet-enriched album.
+                # One album failing (a bad response or a locked DB) must not
+                # abort the rest; it stays un-enriched and the next run retries.
                 logger.warning("Genre enrichment failed for album %s: %s", album.id, e)
             self._emit(processed=processed, message=f"Enriching genres: {album.title}")
 
+        self._artist_cache.clear()
+        self._track_artists.clear()
         self._emit(status="complete", message=f"Enriched genres for {len(albums)} albums")
 
     @staticmethod
-    def _enriched_album_ids() -> set:
-        """Albums that already have at least one musicbrainz/lastfm genre link."""
-        from core.database import AlbumGenre
-        rows = (AlbumGenre
-                .select(AlbumGenre.album)
-                .where(AlbumGenre.source << ("musicbrainz", "lastfm"))
-                .distinct())
-        return {row.album_id for row in rows}
+    def _enriched(model, column):
+        """Query selecting entity ids that already carry a musicbrainz/lastfm
+        genre link."""
+        return model.select(column).where(model.source << ("musicbrainz", "lastfm")).distinct()
+
+    @staticmethod
+    def _track_artists_by_album() -> dict[str, set]:
+        """album id -> artist ids credited on its tracks, in one query rather
+        than one per album."""
+        by_album: dict[str, set] = {}
+        for album_id, artist_id in (Track
+                                    .select(Track.album, Track.artist)
+                                    .distinct().tuples()):
+            by_album.setdefault(album_id, set()).add(artist_id)
+        return by_album
 
     # ------------------------------------------------------------------
     # Enrichment logic
@@ -281,25 +289,21 @@ class GenreEnrichmentManager(BackgroundJob):
             if filtered:
                 album_genres, album_source = filtered, "lastfm"
 
-        if album_genres:
-            self._link_album(album.id, album_genres, album_source)
-
         self._get_artist_genres(artist, api_key)
 
-        # Compilation albums (album.artist == "Various Artists") have tracks
-        # whose *own* artist differs from the album's nominal one — those
-        # artists never get processed above, since we only ever looked at
-        # album.artist. Without this, every track on a various-artists
-        # compilation is permanently stuck with zero artist-level genre
-        # data no matter how many times enrichment runs, because there's no
-        # other album in the library that would ever trigger their lookup.
-        track_artist_ids = {
-            t.artist_id for t in Track.select(Track.artist).where(Track.album == album.id)
-        }
-        track_artist_ids.discard(artist.id)
-        for track_artist_id in track_artist_ids:
-            track_artist = Artist.get_by_id(track_artist_id)
-            self._get_artist_genres(track_artist, api_key)
+        # On a compilation the tracks' own artists differ from the album's
+        # nominal one, so nothing else in the library would ever look them up.
+        track_artist_ids = self._track_artists.get(album.id, set()) - {artist.id}
+        pending = [aid for aid in track_artist_ids if aid not in self._artist_cache]
+        if pending:
+            for track_artist in Artist.select().where(Artist.id << pending):
+                self._get_artist_genres(track_artist, api_key)
+
+        # Written last, and only once every lookup above succeeded: the album's
+        # genre links are what marks it enriched, so writing them earlier would
+        # strand its artists un-enriched if a later lookup failed.
+        if album_genres:
+            self._link_album(album.id, album_genres, album_source)
 
     def _get_artist_genres(self, artist: Artist, api_key: str) -> tuple[list, str | None]:
         if artist.id in self._artist_cache:

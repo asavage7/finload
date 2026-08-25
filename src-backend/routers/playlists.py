@@ -1,4 +1,4 @@
-"""Playlist CRUD, track management, reordering, and cover uploads."""
+"""Playlist CRUD, track management, and cover uploads."""
 import os
 import uuid
 
@@ -146,29 +146,6 @@ def remove_tracks_from_playlist(playlist_id: str, item_ids: list[int] = Body(...
     PlaylistTrack.delete().where(
         (PlaylistTrack.playlist == playlist_id) & (PlaylistTrack.id << item_ids)
     ).execute()
-    return {"status": "ok"}
-
-
-@router.patch("/api/playlist/{playlist_id}/tracks/reorder")
-def reorder_playlist_track(playlist_id: str, item_id: int = Body(..., embed=True), new_index: int = Body(..., embed=True)):
-    dragged = PlaylistTrack.get_or_none(
-        (PlaylistTrack.id == item_id) & (PlaylistTrack.playlist == playlist_id)
-    )
-    if not dragged:
-        raise HTTPException(status_code=404, detail="Item not found")
-    sorted_items = list(
-        PlaylistTrack.select()
-        .where((PlaylistTrack.playlist == playlist_id) & (PlaylistTrack.id != item_id))
-        .order_by(PlaylistTrack.position)
-    )
-    if not sorted_items or new_index <= 0:
-        new_pos = (sorted_items[0].position - 1.0) if sorted_items else 0.0
-    elif new_index >= len(sorted_items):
-        new_pos = sorted_items[-1].position + 1.0
-    else:
-        new_pos = (sorted_items[new_index - 1].position + sorted_items[new_index].position) / 2.0
-    dragged.position = new_pos
-    dragged.save()
     return {"status": "ok"}
 
 

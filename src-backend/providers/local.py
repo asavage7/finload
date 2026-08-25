@@ -15,19 +15,16 @@ on disk, so playback and artwork work after app restarts without a re-scan.
 import base64
 import datetime
 import hashlib
-import io
 import logging
 import os
 import re
-import threading
 from typing import Iterator, List, Optional, Set
 
 import mutagen
 from mutagen.flac import Picture
-from PIL import Image
 
 from core.database import Track
-from .base import MediaProvider
+from .base import MediaProvider, resize_and_save_jpeg
 from .lyrics import NO_LYRICS, fetch_lrclib, parse_lrc
 
 logger = logging.getLogger(__name__)
@@ -157,7 +154,7 @@ class LocalProvider(MediaProvider):
                 "artist": album_artist_id,
                 "release_year": release_year,
                 "provider": "local",
-                "mbid": None,  # no fingerprinting yet — local files aren't MusicBrainz-matched
+                "mbid": None,  # no fingerprinting yet - local files aren't MusicBrainz-matched
             },
             "track_data": {
                 "id": track_id,
@@ -171,7 +168,7 @@ class LocalProvider(MediaProvider):
                 "provider": "local",
                 "mbid": None,
                 "library_id": self.music_path,
-                # File mtime as a proxy "added to library" time — no better
+                # File mtime as a proxy "added to library" time - no better
                 # signal exists for local files (no server to ask). Omitted
                 # entirely rather than set to None on a failed stat, so the
                 # DB layer's own "now" fallback applies instead.
@@ -193,15 +190,24 @@ class LocalProvider(MediaProvider):
         return set(self._scan_cache.keys())
 
     def fetch_items_by_ids(self, item_ids: List[str]) -> Iterator[dict]:
-        for track_id in item_ids:
-            item = self._scan_cache.get(track_id)
-            if item is None:
-                # Not in the scan cache; re-parse from the DB-stored path.
-                path = self._resolve_track_path(track_id)
-                if path and os.path.exists(path):
-                    item = self._parse_file(path)
-            if item:
-                yield item
+        try:
+            for track_id in item_ids:
+                # pop, not get: nothing re-reads an item, and holding a whole
+                # library of parsed tags after sync is pure resident memory.
+                item = self._scan_cache.pop(track_id, None)
+                if item is None:
+                    # Not in the scan cache; re-parse from the DB-stored path.
+                    path = self._resolve_track_path(track_id)
+                    if path and os.path.exists(path):
+                        item = self._parse_file(path)
+                if item:
+                    yield item
+        finally:
+            self._scan_cache.clear()
+
+    def fetch_changed_ids(self, since: str) -> Optional[Set[str]]:
+        """No incremental change detection for local files yet."""
+        return None
 
     # -- playback -----------------------------------------------------------
     def _resolve_track_path(self, track_id: str) -> Optional[str]:
@@ -209,7 +215,7 @@ class LocalProvider(MediaProvider):
         return track.file_path if track and track.file_path else None
 
     def get_stream_url(self, track_id: str) -> str:
-        """Local files play straight off disk — mpv accepts the path as-is."""
+        """Local files play straight off disk - mpv accepts the path as-is."""
         path = self._resolve_track_path(track_id)
         if not path:
             raise FileNotFoundError(f"No local file for track {track_id}")
@@ -277,7 +283,7 @@ class LocalProvider(MediaProvider):
         if track and track.file_path:
             path = track.file_path
         else:
-            # item_id is an album ID — pick any track from that album.
+            # item_id is an album ID - pick any track from that album.
             track = Track.get_or_none(Track.album == item_id)
             path = track.file_path if track and track.file_path else None
         if not path or not os.path.exists(path):
@@ -305,27 +311,12 @@ class LocalProvider(MediaProvider):
         data = self._load_art_bytes(item_id)
         if not data:
             return False
-
-        cache_path = self.get_cached_image_path(item_id, size_px)
-        tmp_path = f"{cache_path}.{os.getpid()}-{threading.get_ident()}.tmp"
         try:
-            with Image.open(io.BytesIO(data)) as img:
-                img = img.convert("RGB")
-                if size_px > 0 and img.width > size_px:
-                    height = round(img.height * (size_px / img.width))
-                    img = img.resize((size_px, max(1, height)), Image.LANCZOS)
-                img.save(tmp_path, "JPEG", quality=88)
-            os.replace(tmp_path, cache_path)
+            resize_and_save_jpeg(data, self.get_cached_image_path(item_id, size_px), max_width=size_px)
             return True
         except Exception as exc:
             logger.warning("Failed to write local artwork for %s: %s", item_id, exc)
             return False
-        finally:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
 
     # -- lyrics -------------------------------------------------------------
     def get_lyrics(self, track_id: str, lrclib_enabled: bool = True,

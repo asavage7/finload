@@ -105,6 +105,18 @@ fn update_playback_status(
     }
 }
 
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    // Kill and reap the backend first.
+    if let Some(state) = app.try_state::<BackendProcess>() {
+        if let Some(mut child) = state.0.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Run through X11 (XWayland on a Wayland session) rather than natively.
@@ -164,6 +176,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             update_now_playing_metadata,
             update_playback_status,
+            restart_app,
         ])
         .setup(|app| {
             // The backend is a PyInstaller onedir bundle shipped as a resource,

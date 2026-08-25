@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from platformdirs import user_data_dir
@@ -47,6 +48,40 @@ def get_data_dir() -> Path:
         return path
 
     return Path(user_data_dir("finload"))
+
+
+_device_id = ""
+
+
+def get_device_id() -> str:
+    """Stable per-install client id, generated on first use and cached in the data
+    directory. Jellyfin scopes a session (and its access token) to this, so two
+    installs sharing one id revoke each other's token every time either signs in.
+
+    Falls back to a process-lifetime id if the file can't be written, which costs
+    a fresh server-side session per launch but never blocks startup.
+    """
+    global _device_id
+    if _device_id:
+        return _device_id
+
+    _device_id = os.getenv("FINLOAD_DEVICE_ID", "").strip()
+    if _device_id:
+        return _device_id
+
+    path = get_data_dir() / "device_id"
+    try:
+        _device_id = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        _device_id = ""
+    if not _device_id:
+        _device_id = f"{APP_NAME.lower()}-{uuid.uuid4().hex}"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_device_id, encoding="utf-8")
+        except OSError:
+            pass
+    return _device_id
 
 
 def get_library_source() -> str:

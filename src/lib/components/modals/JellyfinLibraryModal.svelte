@@ -6,6 +6,10 @@
     export let onClose: () => void = () => {
         open = false;
     };
+    // Fired only after a successful save, distinct from onClose (which also
+    // fires on Cancel) — lets callers advance a flow only when the user
+    // actually confirmed a selection, not on every close.
+    export let onSave: () => void = () => {};
 
     type Library = { id: string; name: string };
 
@@ -80,6 +84,7 @@
                 : "Selection saved — a sync is already running, so it'll fully apply once that finishes.";
             open = false;
             onClose();
+            onSave();
         } catch (e) {
             error = "Couldn't save your selection.";
         } finally {

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
+  import { fly } from "svelte/transition";
+  import { cubicOut } from "svelte/easing";
   import { get } from "svelte/store";
   import ViewLayout from "$lib/components/ViewLayout.svelte";
   import MediaCard from "$lib/components/MediaCard.svelte";
@@ -70,13 +72,16 @@
   // Tracks in-flight request start indices to avoid duplicate fetches.
   let loadingStarts: Set<number> = new Set();
 
-  let loadError = "";
-  // Don't show the spinner if we already have cached data for this tab.
-  let isLoading = !get(libraryTotalCounts)[get(libraryActiveTab)];
+  // Per-tab, not a single shared flag, since switching tabs can happen while a request is in-flight.
+  let loadingTabs: Set<string> = new Set(
+    get(libraryTotalCounts)[get(libraryActiveTab)] ? [] : [get(libraryActiveTab)],
+  );
+  let tabErrors: Record<string, string> = {};
+  $: isLoading = loadingTabs.has(activeTab);
+  $: loadError = tabErrors[activeTab] ?? "";
   let scrollContainer: HTMLDivElement | null = null;
   let gridScrollContainer: HTMLDivElement | null = null;
   let gridWidth = 0;
-  let contentWrapper: HTMLElement | null = null;
 
   const cardTypeByTab: Record<
     string,
@@ -92,9 +97,12 @@
   // --- Hand-rolled list windowing (single column, fixed-height rows) ---
   let listScrollTop = 0;
   let listViewportH = 0;
-  let listRowHeight = 61; // seed; corrected by one measurement
-  let listMeasured = false;
+  const LIST_ROW_HEIGHT_SEED = 61;
   const LIST_OVERSCAN = 6;
+
+  // Measured once per tab, like rowOffsets below
+  let listRowHeights: Record<string, number> = {};
+  $: listRowHeight = listRowHeights[activeTab] ?? LIST_ROW_HEIGHT_SEED;
 
   // Chunk size scales with how many items fit on screen so we don't over/under-fetch.
   $: chunkSize = Math.max(
@@ -107,14 +115,12 @@
   $: evictionBuffer = chunkSize * 3;
 
   function measureList(node: HTMLElement) {
-    if (listMeasured) return;
+    if (listRowHeights[activeTab] != null) return;
+    const tab = activeTab;
     requestAnimationFrame(() => {
       const row = node.firstElementChild as HTMLElement | null;
       const h = row?.getBoundingClientRect().height ?? 0;
-      if (h > 0) {
-        listRowHeight = h;
-        listMeasured = true;
-      }
+      if (h > 0) listRowHeights = { ...listRowHeights, [tab]: h };
     });
   }
 
@@ -217,9 +223,9 @@
     }
   }
 
+  // Restores a tab's remembered scroll position
   async function restoreScrollPosition(tab: string) {
     const saved = get(libraryScrollTop)[tab] ?? 0;
-    if (saved <= 0) return;
     await tick();
     // Wait one animation frame so the virtualizer finishes its first layout pass.
     await new Promise<void>((resolve) =>
@@ -230,11 +236,7 @@
     if (!container) return;
     container.scrollTop = saved;
     // Drive the virtualizer window from here directly instead of waiting on
-    // the container's native scroll event to reach the RAF-throttled handler:
-    // that round-trip isn't guaranteed to land before first paint, so the grid
-    // can render its initial (top-of-list) window against a range the earlier
-    // deep-scroll already evicted from the cache — a blank screen until the
-    // user's own scroll happens to fix it up.
+    // the container's native scroll event to reach the RAF-throttled handler
     if (isGridTab) gridScrollTop = saved;
     else listScrollTop = saved;
     triggerWindowLoad();
@@ -363,7 +365,7 @@
 
   async function loadData(tab: (typeof tabs)[number], force = false) {
     libraryActiveTab.set(tab);
-    loadError = "";
+    tabErrors = { ...tabErrors, [tab]: "" };
 
     const hasCount = (get(libraryTotalCounts)[tab] ?? 0) > 0;
     const hasItems = (get(libraryItemCache)[tab]?.length ?? 0) > 0;
@@ -373,7 +375,7 @@
       return;
     }
 
-    isLoading = true;
+    loadingTabs = new Set(loadingTabs).add(tab);
     loadingStarts = new Set();
     delete keepRanges[tab];
 
@@ -391,13 +393,23 @@
 
       await loadChunk(tab, 0, Math.max(chunkSize, 100) - 1);
     } catch (error) {
-      loadError =
-        "Lost contact with the player service. It may still be starting, or it stopped unexpectedly.";
+      tabErrors = {
+        ...tabErrors,
+        [tab]: "Lost contact with the player service. It may still be starting, or it stopped unexpectedly.",
+      };
       console.error(`Failed to load ${tab.toLowerCase()}:`, error);
     } finally {
-      isLoading = false;
+      const next = new Set(loadingTabs);
+      next.delete(tab);
+      loadingTabs = next;
     }
   }
+
+  // Direction the next tab's content should fly in from, consumed by the
+  // in:fly transition below — captured before activeTab changes since a
+  // cache-hit tab switch flips it synchronously, with no scroll-container
+  // remount to hang an imperative animation off of.
+  let slideFromX = 28;
 
   function handleTabClick(tab: (typeof tabs)[number]) {
     if (tab === activeTab) {
@@ -405,29 +417,14 @@
       if (container) container.scrollTop = 0;
       return;
     }
+
+    saveScrollPosition();
+
     const newIdx = tabs.indexOf(tab);
     const curIdx = tabs.indexOf(activeTab as (typeof tabs)[number]);
-    const cls = newIdx > curIdx ? "slide-in-left" : "slide-in-right";
+    slideFromX = newIdx > curIdx ? 28 : -28;
 
-    loadData(tab)
-      .then(() => tick())
-      .then(() => {
-        // Tab switches always start at the top.
-        const container = activeScrollContainer();
-        if (container) container.scrollTop = 0;
-        if (!contentWrapper) return;
-        const wrapper = contentWrapper;
-        wrapper.classList.remove("slide-in-left", "slide-in-right");
-        void wrapper.offsetWidth; // force reflow to restart animation
-        wrapper.classList.add(cls);
-        wrapper.addEventListener(
-          "animationend",
-          () => {
-            wrapper.classList.remove("slide-in-left", "slide-in-right");
-          },
-          { once: true },
-        );
-      });
+    loadData(tab).then(() => restoreScrollPosition(tab));
   }
 
   let showCreationModal = false;
@@ -519,11 +516,12 @@
     </div>
   </div>
 
-  <div
-    slot="content"
-    bind:this={contentWrapper}
-    class="w-full h-full flex flex-col min-h-0"
-  >
+  <div slot="content" class="w-full h-full flex flex-col min-h-0 overflow-hidden">
+    {#key activeTab}
+    <div
+      class="w-full h-full flex flex-col min-h-0"
+      in:fly={{ x: slideFromX, duration: 180, easing: cubicOut }}
+    >
     {#if loadError}
       <EmptyState
         variant="error"
@@ -639,6 +637,8 @@
         </div>
       </div>
     {/if}
+    </div>
+    {/key}
   </div>
 </ViewLayout>
 

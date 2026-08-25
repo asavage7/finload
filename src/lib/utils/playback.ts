@@ -1,6 +1,6 @@
 import { goto } from '$app/navigation';
 import { apiUrl } from '$lib/backend';
-import { playlistPickerStore, playlistEditStore, showConfirm, playerState } from '$lib/store';
+import { playlistPickerStore, playlistEditStore, showConfirm, playerState, radioStarting } from '$lib/store';
 import {
     IconPlayerPlayFilled,
     IconPencilFilled,
@@ -163,13 +163,24 @@ export async function playItem(itemId: Id, itemType: string, shuffle = false): P
     await playTracks(await getTrackIds(itemId, itemType), shuffle);
 }
 
-// Replaces the queue with a fresh algorithmic mix starting from a track,
-// album, artist, or playlist (backend picks a handful of representative
-// seed tracks for anything but a single track — see radio.pick_seed_tracks).
-// Distinct from setRadioEnabled, which turns the same auto-generation
-// on/off for whatever's already queued.
+// Replaces the queue with a fresh algorithmic mix starting from a track, album,
+// artist, or playlist (the backend picks representative seed tracks for anything
+// but a single track — see radio.pick_seed_tracks). Distinct from
+// setRadioEnabled, which toggles the same auto-generation for what's queued.
 export async function startRadio(id: Id, type: 'track' | 'album' | 'artist' | 'playlist'): Promise<void> {
-    await fetch(apiUrl(`/api/playback/start_radio/${type}/${id}`), { method: 'POST' });
+    // A track radio plays immediately and fills the mix in the background; the
+    // other kinds build their first batch on this request, which can include
+    // analyzing seed audio that hasn't been analyzed yet.
+    if (type === 'track') {
+        await fetch(apiUrl(`/api/playback/start_radio/track/${id}`), { method: 'POST' });
+        return;
+    }
+    radioStarting.set(true);
+    try {
+        await fetch(apiUrl(`/api/playback/start_radio/${type}/${id}`), { method: 'POST' });
+    } finally {
+        radioStarting.set(false);
+    }
 }
 
 export function setRadioEnabled(enabled: boolean): void {

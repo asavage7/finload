@@ -23,6 +23,7 @@
     backendReady,
   } from "$lib/store";
   import StartupGate from "$lib/components/StartupGate.svelte";
+  import RadioStartingToast from "$lib/components/RadioStartingToast.svelte";
   import { fade } from "svelte/transition";
   import { onDestroy, onMount } from "svelte";
   import { apiUrl, wsUrl } from "$lib/backend";
@@ -132,8 +133,9 @@
   }
 
   // Bounces back to /onboarding any time it isn't complete, so it can't be
-  // escaped via the sidebar or browser back button.
-  $: if ($onboardingComplete === false && $page.url.pathname !== "/onboarding") {
+  // escaped via the sidebar or browser back button. startsWith, not ===,
+  // since onboarding itself now spans /onboarding and /onboarding/privacy.
+  $: if ($onboardingComplete === false && !$page.url.pathname.startsWith("/onboarding")) {
     goto("/onboarding");
   }
 
@@ -229,8 +231,8 @@
   // Now-playing and onboarding are full-screen views, so both edge panels
   // step aside there (now-playing shows the queue inline within the page
   // instead; onboarding has no need for either panel at all).
-  $: isFullScreen = $page.url.pathname === "/now-playing" || $page.url.pathname === "/onboarding";
-  $: isOnboardingRoute = $page.url.pathname === "/onboarding";
+  $: isOnboardingRoute = $page.url.pathname.startsWith("/onboarding");
+  $: isFullScreen = $page.url.pathname === "/now-playing" || isOnboardingRoute;
   // The music quiz plays its own clips behind its own transport bar, and the
   // footer would name the track the player is meant to be guessing.
   $: hidesFooter =
@@ -254,6 +256,7 @@
 
 <PlaylistPicker />
 <ConfirmModal />
+<RadioStartingToast />
 <PlaylistCreationModal
   edit={true}
   playlist={$playlistEditStore.playlist}

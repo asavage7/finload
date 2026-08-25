@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import ViewLayout from "$lib/components/ViewLayout.svelte";
   import BackButton from "$lib/components/ui/BackButton.svelte";
   import IconButton from "$lib/components/ui/IconButton.svelte";
   import {
     IconInfoCircle,
-    IconAdjustments,
     IconListCheck,
     IconLibrary,
     IconPlayerPlay,
@@ -39,21 +39,11 @@
     max?: number;
     step?: number;
     showIf?: { key: string; value: string | boolean };
-    // For control: "task" only — the state.jobs registry name this entry
-    // drives, and (mirroring showIf) the settings key/value that must match
-    // for the task to be runnable, with the reason to show when it doesn't.
     job?: string;
-    // For control: "action" only — looked up in settingActions below to run
-    // the button's actual behavior, and the label shown on the button
-    // itself (setting.label is the row's title, same as every other control).
     action?: string;
     buttonLabel?: string;
     enabledIf?: { key: string; value: string | boolean };
     disabledReason?: string;
-    // Starts a new box within the section, splitting it off from whatever
-    // came before. Omitted (the default) keeps a setting in the same box
-    // as the previous one, so sections that never set this render as one
-    // box, same as before this existed.
     break?: boolean;
   };
 
@@ -65,9 +55,6 @@
 
   const schema = schemaData as { sections: SectionDef[] };
 
-  // Every setting across every section, keyed by its own key — lets showIf
-  // chain through a referenced setting's own showIf (see isVisible) instead
-  // of each dependent setting having to repeat its ancestors' conditions.
   const settingsByKey = new Map<string, SettingDef>(
     schema.sections.flatMap((s) => s.settings).map((s) => [s.key, s]),
   );
@@ -75,7 +62,6 @@
   // Keyed by section id (settings-schema.json); falls back to no icon for
   // any section id added to the schema without a corresponding entry here.
   const sectionIcons: Record<string, typeof IconLibrary> = {
-    setup: IconAdjustments,
     tasks: IconListCheck,
     library: IconLibrary,
     playback: IconPlayerPlay,
@@ -99,8 +85,6 @@
     jobs = jobs.map((job) => (job.name === name ? { ...job, state } : job));
   }
 
-  // What JobCard actually renders: schema-provided label/description/gating
-  // merged with the backend's live state for that job.
   type TaskDisplay = {
     label: string;
     description: string;
@@ -137,7 +121,7 @@
       });
       if (!ok) return;
     }
-    // Optimistic flip so the button reacts instantly; the socket corrects it.
+    // Optimistic UI update
     setJobState(name, {
       ...task.state,
       status: "running",
@@ -167,7 +151,7 @@
         );
       }
     } catch {
-      // backend unavailable; leave the list empty
+      // backend unavailable
     }
     jobsLoaded = true;
   }
@@ -187,11 +171,7 @@
     unsubscribeJobs.forEach((unsubscribe) => unsubscribe());
   });
 
-  // A setting is visible only if its own showIf matches AND — when showIf
-  // points at another setting in the schema — that setting is itself
-  // visible, walking the chain transitively. So a setting gated on
-  // "enable_transcoding", which is itself gated on "library_source", doesn't
-  // need to repeat the library_source condition to inherit it.
+  // A setting is visible only if the chain of showIf conditions are satisfied.
   function isVisible(
     setting: SettingDef,
     currentValues: Record<string, unknown>,
@@ -213,19 +193,14 @@
     return boxes;
   }
 
-  // Recomputed whenever settings values or job-load state change, since
-  // showIf/task visibility can change which sections actually render.
-  // `values` must appear directly in this statement (not just inside
-  // isVisible) or Svelte's dependency analysis won't pick it up and this
-  // will never re-run when a showIf-gating setting changes.
+  // Recomputed whenever settings values or job-load state change
   $: renderedSections = schema.sections
     .map((section) => {
       const visibleSettings = section.settings.filter((s) => isVisible(s, values));
       const hasTasks = visibleSettings.some((s) => s.control === "task");
       return { ...section, visibleSettings, hasTasks };
     })
-    // A section with tasks stays hidden until jobs have loaded, so it
-    // doesn't flash empty (its boxes would have no rows to show yet).
+    // A section with tasks stays hidden until jobs have loaded
     .filter((s) => s.visibleSettings.length > 0 && (!s.hasTasks || jobsLoaded));
 
   $: if (loaded && renderedSections) tick().then(updateActiveSection);
@@ -235,7 +210,6 @@
   }
 
   // Highlights the last section whose top has scrolled past a fixed offset
-  // from the content pane's top, mirroring how a reading position "sticks".
   function updateActiveSection() {
     if (!contentEl) return;
     const threshold = contentEl.getBoundingClientRect().top + 140;
@@ -293,12 +267,16 @@
     saveSetting(setting.key, value);
   }
 
+  // Setup is where the library source is chosen, and changing it swaps both the
+  // provider and the database the app is running on. Restarting into setup means
+  // that happens on a freshly started app with nothing playing or cached, rather
+  // than being hot-swapped underneath a live player.
   async function rerunSetup() {
     const confirmed = await showConfirm({
       title: "Re-run setup?",
       message:
-        "This may interrupt playback and switch your library source. Your existing libraries won't be deleted.",
-      confirmLabel: "Continue",
+        "Finload will restart into the setup wizard, so playback stops. Each source keeps its own library, so nothing is deleted.",
+      confirmLabel: "Restart and Set Up",
     });
     if (!confirmed) return;
 
@@ -307,13 +285,16 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ onboarding_complete: false }),
     });
-    onboardingComplete.set(false);
-    goto("/onboarding");
+    try {
+      await invoke("restart_app");
+    } catch {
+      // Not running under the Tauri webview (browser dev run): fall back to
+      // navigating there in place.
+      onboardingComplete.set(false);
+      goto("/onboarding");
+    }
   }
 
-  // What a control: "action" button actually does when clicked, keyed by
-  // its schema `action` id — mirrors how control: "task" looks a job up by
-  // name in state.jobs, just on the frontend instead of the backend.
   const settingActions: Record<string, () => void> = {
     rerun_setup: rerunSetup,
     manage_jellyfin_libraries: () => (libraryModalOpen = true),

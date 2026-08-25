@@ -159,6 +159,11 @@ export const playlistEditStore = writable<{ open: boolean; playlist: any | null 
     playlist: null,
 });
 
+// True while a "Start Radio" request is in flight. Album/artist/playlist radio
+// builds its first batch on the request, and on a fresh install that includes
+// analyzing the seed tracks, so the click has a visible wait to cover.
+export const radioStarting = writable(false);
+
 type ConfirmState = {
     open: boolean;
     title: string;

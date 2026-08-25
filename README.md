@@ -3,7 +3,7 @@
 [![CI](https://github.com/asavage7/finload/actions/workflows/ci.yml/badge.svg)](https://github.com/asavage7/finload/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-Finload is a next-gen elegant Jellyfin music client, with a custom discovery algorithm built to let you re-live your library.
+Finload is a next-gen elegant Jellyfin/Local music client, with a custom discovery algorithm built to let you re-live your library.
 
 **Finload is currently in beta. Give it a shot! If you run into problems, feel free to [open an issue](https://github.com/asavage7/finload/issues).**
 
@@ -26,16 +26,21 @@ Finload is a next-gen client built around music discovery. Sync your library, an
 - Browse your library with Finload's functional but incredibly elegant UI.
 
 ### How it Works
-Finload analyzes your music directly using to extract acoustic similarites between songs. It combines this with genre tags and your listening history to curate the perfect collection of songs. Finload even takes into account how you interact with songs day-to-day to match your tastes. 
+Finload analyzes your music directly using DSP to extract acoustic similarites between songs. It combines this with genre tags and your listening history to curate the perfect collection of songs. Finload even takes into account how you interact with songs day-to-day to match your tastes.
+
+**Finload optionally connects to MusicBrainz, Last.fm, and TheAudioDB to better learn your library. Audio analysis is entirely local.**
 
 ## Features
 
-- Jellyfin & Local Folder Support
+- Connect to Jellyfin
+- Listen to local audio (MP3, FLAC, M4A, AAC, ALAC, OGG, OPUS, WAV, anything MPV supports.)
 - Responsive Homepage tailored to your library
 - Library view (grid and list)
 - Detail pages for albums, artists, playlists, and genres
 - Playlists
 - Gapless playback
+- Transcoding
+- Automatic Genre/Metadata Enrichment
 - Queue, History, and Lyrics Panel
 - Fullscreen "Now Playing" page
 - Ratings for tracks and albums
@@ -72,6 +77,8 @@ sudo dnf install ./finload-<version>-1.x86_64.rpm
 chmod +x finload_<version>_amd64.AppImage
 ./finload_<version>_amd64.AppImage
 ```
+
+Initial sync, enrichment, and audio processing can take a while on large libraries. The app is still fully functional during this time, but recommendations will improve as more songs are analyzed.
 
 ## Development
 

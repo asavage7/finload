@@ -14,12 +14,14 @@ def get_settings():
 
 @router.patch("/api/settings")
 def update_settings(data: dict = Body(...)):
+    was_onboarded = state.settings.get("onboarding_complete")
     state.settings.set(data)
 
-    # Switching library source swaps in a different provider and its own
-    # database. Otherwise, if any of the active provider's own settings
-    # changed, reconfigure it live so the user doesn't have to restart.
-    if "library_source" in data:
+    # The source is only chosen in the setup wizard, and the app restarts into
+    # that wizard, so this always applies to a freshly started app. There is
+    # deliberately no hot-swap path for a source change made mid-session.
+    # Otherwise, reconfigure the active provider live for its own settings.
+    if "library_source" in data and not was_onboarded:
         state.switch_source()
     elif any(key in data for key in state.provider.SETTINGS_KEYS):
         state.provider.configure(state.settings)

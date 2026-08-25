@@ -38,7 +38,7 @@ class PlaybackManager:
         # playback has happened.
         self._file_loaded = False
         self.shuffle_original_positions: dict = {}
-        # The open PlayHistory row for whatever's currently playing — created
+        # The open PlayHistory row for whatever's currently playing -- created
         # the instant a track starts (see _start_history) so it shows up in
         # history immediately, then corrected in place (see _finalize_history)
         # once we know how much of it actually got listened to.
@@ -116,7 +116,7 @@ class PlaybackManager:
         self._apply_replaygain()
 
     # -----------------------------------------------------------------------
-    # PlaybackState helpers — single source of truth for "current" item
+    # PlaybackState helpers -- single source of truth for "current" item
     # -----------------------------------------------------------------------
 
     def _get_current(self):
@@ -139,8 +139,8 @@ class PlaybackManager:
         """Update PlaybackState to point to queue_item (may be None). Every
         mix (queue_type=2) item at or before this position becomes "real"
         (queue_type=1): the mix ahead is volatile/replaceable, but anything
-        the user has actually reached — including tracks jumped straight
-        past, not just the one landed on — shouldn't be silently
+        the user has actually reached -- including tracks jumped straight
+        past, not just the one landed on -- shouldn't be silently
         regenerated or evicted out from under them. A bulk update rather
         than promoting just queue_item itself, since jump_to_queue_item can
         skip several mix tracks in one move without each individually
@@ -235,7 +235,7 @@ class PlaybackManager:
             return
         mode = self.settings.get('replay_gain_mode') or 'auto'
         if mode == 'auto':
-            # mpv has no "auto" mode; derive one from context — album gain keeps
+            # mpv has no "auto" mode; derive one from context -- album gain keeps
             # a record's own relative levels intact, but when shuffling across
             # releases per-track gain is the sane choice for even loudness.
             mode = 'track' if self.shuffle else 'album'
@@ -296,7 +296,7 @@ class PlaybackManager:
 
         queue_state = []
         # Eager-join Track/Album/Artist so the per-item field access below doesn't
-        # trigger a lazy FK load (≈3 queries per row) on every broadcast.
+        # trigger a lazy FK load (~3 queries per row) on every broadcast.
         query = (QueueItem.select(QueueItem, Track, Artist, Album)
                  .join(Track).join(Artist).switch(Track).join(Album)
                  .order_by(QueueItem.position.asc()))
@@ -325,7 +325,7 @@ class PlaybackManager:
         Serialized with a lock: mpv property observers fire from mpv's thread while
         API handlers run on uvicorn threads. Without the lock, two concurrent calls
         can both read queue_dirty=True, both rebuild queue_state, and one can clear
-        prev_state with stale data — causing the queue to appear empty on the client.
+        prev_state with stale data -- causing the queue to appear empty on the client.
         """
         with self._broadcast_lock:
             queue_changed = self.queue_dirty or not self.prev_state
@@ -414,7 +414,7 @@ class PlaybackManager:
             pass
 
     def _report_play_async(self, track_id):
-        """Scrobble off the playback thread — _finalize_history runs on mpv's
+        """Scrobble off the playback thread -- _finalize_history runs on mpv's
         observer thread, where a blocking network POST would stall state handling."""
         provider = self.provider
 
@@ -433,7 +433,7 @@ class PlaybackManager:
     def play_now(self, track_id, context_ids=None):
         """Clears the queue, loads the context, and starts playing track_id.
 
-        Always ends any active radio session (see start_radio) — a plain
+        Always ends any active radio session (see start_radio) -- a plain
         "play this" replaces the queue outright, so a stale mix shouldn't
         keep topping itself up underneath the new context. start_radio calls
         this first and then sets its own seed immediately after.
@@ -452,7 +452,7 @@ class PlaybackManager:
                     rows.append({"track": tid, "queue_type": 1, "position": float(i)})
                     if current_pos is None and tid == track_id:
                         current_pos = float(i)
-                # Batched insert instead of one INSERT per track — a "play artist"
+                # Batched insert instead of one INSERT per track -- a "play artist"
                 # can enqueue a whole discography in a single round-trip per chunk.
                 for batch in _chunks(rows, 100):
                     QueueItem.insert_many(batch).execute()
@@ -522,21 +522,34 @@ class PlaybackManager:
         self.broadcast_state()
 
     # -----------------------------------------------------------------------
-    # Radio (auto-generated "mix" queue tracks — see radio.py/discovery.py)
+    # Radio (auto-generated "mix" queue tracks -- see radio.py/discovery.py)
     # -----------------------------------------------------------------------
 
-    def start_radio(self, seed_track_id: str):
-        """Replaces the queue with seed_track_id playing now, then generates
-        the first mix batch after it. For "Start Radio" from a track context
-        menu, where playing the clicked track itself is the whole point —
-        see start_radio_from_reference for album/artist radio, and
-        set_radio_enabled for turning radio mode on/off on top of whatever's
-        already queued.
+    def _ensure_seed_features(self, track_ids):
+        """Analyze any of ``track_ids`` that radio needs and the background pass
+        hasn't reached yet, so a fresh install can start a mix instead of failing
+        on a seed with no cached features. Imported here rather than at module
+        scope: state imports this module.
 
-        play_now already starts audio immediately; the mix batch is
-        generated *after* that, off-thread, so starting a radio never waits
-        on discovery.build_queue scanning the library before sound comes
-        out — it should feel as instant as any other "play this" action.
+        Costs a few seconds per un-analyzed seed, which is why the callers that
+        run on a request thread are the ones the frontend shows a spinner for.
+        """
+        from core import state
+        try:
+            return state.audio_features.ensure_features(track_ids)
+        except Exception:
+            traceback.print_exc()
+            return set()
+
+    def start_radio(self, seed_track_id: str):
+        """Replaces the queue with seed_track_id playing now, then generates the
+        first mix batch after it -- "Start Radio" from a track context menu, where
+        playing the clicked track is the whole point. See
+        start_radio_from_reference for album/artist radio and set_radio_enabled
+        for toggling radio mode over whatever is already queued.
+
+        play_now starts audio immediately and the batch is generated after it,
+        off-thread, so the click never waits on discovery.build_queue.
         """
         self.play_now(seed_track_id, context_ids=[seed_track_id])
         self._persist_state(radio_seed_track=seed_track_id)
@@ -544,18 +557,15 @@ class PlaybackManager:
         self._top_up_mix_async()
 
     def start_radio_from_reference(self, reference_track_id: str, extra_seed_ids: list[str] | None = None):
-        """Album/artist/playlist radio: reference_track_id and extra_seed_ids
-        (a handful of tracks off the album/artist/playlist -- see
-        radio.pick_seed_tracks) only seed the recommendation engine and are
-        never themselves played or queued, matching Finamp's own album/artist
-        instant-mix behavior (it doesn't play a representative track either,
-        it just starts the mix). Generates the first batch synchronously --
-        discovery.build_queue's cost comes from scanning candidates, not
-        from how many get selected,
-        so asking for the whole small batch up front is no slower than
-        asking for one track -- plays its first entry immediately, and
-        queues the rest.
+        """Album/artist/playlist radio: reference_track_id and extra_seed_ids (a
+        handful of tracks off the entity -- see radio.pick_seed_tracks) only seed
+        the recommendation engine and are never themselves played or queued,
+        matching Finamp's instant-mix behavior. Generates the first batch
+        synchronously -- build_queue's cost is scanning candidates, not selecting
+        them, so a whole batch is no slower than one track -- plays its first
+        entry immediately and queues the rest.
         """
+        self._ensure_seed_features([reference_track_id, *(extra_seed_ids or [])])
         track_ids = radio.generate_batch(reference_track_id, [], set(), extra_seed_ids=extra_seed_ids,
                                           library_ids=self.settings.get("jellyfin_library_ids"))
         if not track_ids:
@@ -578,13 +588,12 @@ class PlaybackManager:
             self.broadcast_state()
 
     def set_radio_enabled(self, enabled: bool):
-        """The queue panel's infinite-queue toggle: turns radio mode on/off
-        for the *current* queue without clearing the user's own curated
-        queue (unlike start_radio). Enabling seeds from whatever's currently
-        playing and generates a fresh batch immediately; disabling drops any
-        not-yet-played mix tracks (queue_type=2) and stops future top-ups —
-        so toggling off then back on doubles as a "re-roll" of the mix
-        without touching anything the user manually queued."""
+        """The queue panel's infinite-queue toggle: turns radio mode on/off for the
+        *current* queue without clearing the user's own curated queue (unlike
+        start_radio). Enabling seeds from whatever is playing and kicks off a fresh
+        batch; disabling drops any not-yet-played mix tracks (queue_type=2) and
+        stops future top-ups, so toggling off and back on doubles as a "re-roll"
+        that leaves anything hand-queued alone."""
         if not enabled:
             current = self._get_current()
             with db.atomic():
@@ -597,7 +606,7 @@ class PlaybackManager:
             self.queue_dirty = True
             # Same "queue changed near the front, refresh the native mpv
             # lookahead" pattern used by add_to_play_next/set_shuffle/
-            # set_repeat — a deleted mix track may have been the preloaded
+            # set_repeat -- a deleted mix track may have been the preloaded
             # next file.
             try:
                 self.player.command('playlist-clear')
@@ -612,16 +621,28 @@ class PlaybackManager:
             return
         self._persist_state(radio_seed_track=current.track_id)
         self.current_state["radio_enabled"] = True
-        # An explicit re-enable is the user's "re-roll" gesture: widen the
-        # first pick so the fresh mix doesn't open on the same track the
-        # deleted one did (see discovery.build_queue's reroll param).
-        self._top_up_mix(reroll=True)
+        # An explicit re-enable is the user's "re-roll" gesture: widen the first
+        # pick so the fresh mix doesn't open on the same track the deleted one did
+        # (see discovery.build_queue's reroll param). Off-thread, because this
+        # runs on the websocket's event loop and the batch can take seconds --
+        # the new queue arrives over the socket when it lands.
+        self._top_up_mix_async(reroll=True)
         self.broadcast_state()
 
+    def _mix_low_water_mark(self) -> int:
+        """How many un-played mix tracks to keep ahead of the current one, from
+        the "autoplay_queue_length" setting."""
+        try:
+            configured = int(self.settings.get("autoplay_queue_length"))
+        except (TypeError, ValueError):
+            return radio.MIX_LOW_WATER_MARK
+        return max(1, configured)
+
     def _top_up_mix(self, reroll: bool = False):
-        """Generates and appends the next mix batch if a radio session is
-        active and running low. Synchronous — callers on mpv's observer
-        thread should use _top_up_mix_async instead."""
+        """Generates and appends the next mix batch if a radio session is active
+        and running low. Synchronous, and can spend seconds analyzing an
+        un-analyzed seed -- every caller off a live thread uses
+        _top_up_mix_async."""
         state_row = PlaybackState.get_or_none(PlaybackState.id == 1)
         seed_id = state_row.radio_seed_track_id if state_row else None
         if not seed_id:
@@ -633,13 +654,20 @@ class PlaybackManager:
         remaining_mix = QueueItem.select().where(
             (QueueItem.queue_type == 2) & (QueueItem.position > current.position)
         ).count()
-        if remaining_mix >= radio.MIX_LOW_WATER_MARK:
+        target = self._mix_low_water_mark()
+        if remaining_mix >= target:
             return
+
+        # Batches stay small so real listening steers the next one quickly (see
+        # radio.MIX_BATCH_SIZE), but a user who asked for a deeper buffer gets it
+        # filled in one pass instead of a few tracks at a time.
+        size = max(radio.MIX_BATCH_SIZE, target - remaining_mix)
 
         exclude_ids = {q.track_id for q in QueueItem.select(QueueItem.track)}
         context, feedback, elapsed_ms, manual_ids = radio.session_context(current.position)
+        self._ensure_seed_features([seed_id])
         try:
-            new_ids = radio.generate_batch(seed_id, context, exclude_ids,
+            new_ids = radio.generate_batch(seed_id, context, exclude_ids, size=size,
                                             feedback=feedback, manual_ids=manual_ids,
                                             elapsed_ms=elapsed_ms, reroll=reroll,
                                             library_ids=self.settings.get("jellyfin_library_ids"))
@@ -659,14 +687,13 @@ class PlaybackManager:
         self.prepare_next()
         self.broadcast_state()
 
-    def _top_up_mix_async(self):
-        """Runs _top_up_mix off mpv's observer thread — discovery.build_queue
-        scans the whole library's cached features, too slow to run inline on
-        the thread that's also driving audio playback events. broadcast_state
-        is already lock-protected against concurrent callers (see its
-        docstring), so a background thread here is safe the same way
-        _report_play_async's is."""
-        threading.Thread(target=self._top_up_mix, daemon=True).start()
+    def _top_up_mix_async(self, reroll: bool = False):
+        """Runs _top_up_mix off mpv's observer thread (and off the websocket event
+        loop): it scans the library's cached features and may analyze a seed, far
+        too slow to run inline on either. broadcast_state is already
+        lock-protected against concurrent callers, so this is safe the same way
+        _report_play_async is."""
+        threading.Thread(target=self._top_up_mix, args=(reroll,), daemon=True).start()
 
     def prepare_next(self):
         current = self._get_current()
@@ -727,6 +754,20 @@ class PlaybackManager:
         if not QueueItem.select().exists():
             return
         self._queue_ended = True
+        if (self.settings.get("enable_radio")
+                and self.settings.get("autoplay_default")
+                and not self.current_state["radio_enabled"]):
+            # Off mpv's observer thread: _top_up_mix can spend seconds in
+            # discovery.build_queue, and this thread is also driving playback events.
+            threading.Thread(target=self._autoplay_at_queue_end,
+                             args=(current.track_id, current.position),
+                             daemon=True).start()
+            return
+        self._reset_to_queue_start()
+
+    def _reset_to_queue_start(self):
+        """Park a finished queue back at its first track, paused at 0, so the user
+        can hit play to hear it again."""
         first_track = QueueItem.select().order_by(QueueItem.position.asc()).first()
         if first_track:
             self._set_current(first_track, completed=True)
@@ -739,6 +780,32 @@ class PlaybackManager:
         # overwrite these: mpv reports pause=False when idle after playlist exhaustion.
         self.current_state["time_pos"] = 0
         self.current_state["is_paused"] = True
+        self.broadcast_state()
+
+    def _autoplay_at_queue_end(self, seed_track_id, last_position):
+        """Roll a finished queue straight into a mix seeded from its last track,
+        rather than stopping (the "autoplay_default" setting).
+
+        Falls back to the ordinary wrap-to-first-track reset when the mix comes
+        back empty, so a library with nothing analyzed yet behaves the way it did
+        before the setting was turned on instead of appearing to hang."""
+        self._persist_state(radio_seed_track=seed_track_id)
+        self.current_state["radio_enabled"] = True
+        self._top_up_mix()
+
+        next_track = self._get_next_track(last_position)
+        if next_track is None:
+            self._persist_state(radio_seed_track=None)
+            self.current_state["radio_enabled"] = False
+            self._reset_to_queue_start()
+            return
+
+        self._set_current(next_track, completed=True)
+        self.queue_dirty = True
+        self._replace_current_track(next_track)
+        self.prepare_next()
+        self.last_broadcast_time = 0
+        self.refresh_track_cache()
         self.broadcast_state()
 
     def advance_queue(self):
@@ -844,7 +911,7 @@ class PlaybackManager:
                 next_item = self._get_next_track(target_item.position)
                 self._set_current(next_item)
             target_item.delete_instance()
-            # Float positions: no renormalization needed — gaps are fine.
+            # Float positions: no renormalization needed -- gaps are fine.
         self.shuffle_original_positions.pop(target_item.id, None)
 
         self.queue_dirty = True
@@ -869,7 +936,7 @@ class PlaybackManager:
         self.current_state["radio_enabled"] = False
         with db.atomic():
             QueueItem.delete().where(True).execute()
-            # ON DELETE SET NULL wires PlaybackState.current_queue_item_id → NULL automatically.
+            # ON DELETE SET NULL wires PlaybackState.current_queue_item_id -> NULL automatically.
         self.queue_dirty = True
         try:
             self.player.command('playlist-clear')
@@ -883,7 +950,7 @@ class PlaybackManager:
         """Halt playback and drop cached queue state ahead of a DB swap.
 
         The library source (and its database) is about to change, so anything
-        loaded from the old database — the mpv playlist, the cached queue — is
+        loaded from the old database -- the mpv playlist, the cached queue -- is
         no longer valid. State is re-read lazily from the new DB on next access.
         """
         self._intentional_stop = True
@@ -900,7 +967,7 @@ class PlaybackManager:
         self.broadcast_state()
 
     def reorder_queue(self, item_id: int, target_index: int):
-        """Moves an item to target_index (0-based) using float midpoint — O(1), no cascade shifts."""
+        """Moves an item to target_index (0-based) using float midpoint -- O(1), no cascade shifts."""
         dragged_item = QueueItem.get_or_none(QueueItem.id == item_id)
         if not dragged_item:
             return
@@ -956,7 +1023,7 @@ class PlaybackManager:
         self.shuffle = enabled
         self.current_state["shuffle"] = enabled
         self._persist_state(shuffle=enabled)
-        # 'auto' Replay Gain picks album vs track by shuffle state — refresh it.
+        # 'auto' Replay Gain picks album vs track by shuffle state -- refresh it.
         self._apply_replaygain()
         current = self._get_current()
 

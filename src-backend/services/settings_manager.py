@@ -21,22 +21,9 @@ class SettingsManager:
             "jellyfin_url": "",
             "jellyfin_username": "",
             "jellyfin_password": "",
-            # Which Jellyfin libraries (Views) to sync from and browse.
-            # Empty means unfiltered -- sync/show everything, same as before
-            # this existed. jellyfin_library_ids is what browsing filters by
-            # right now; jellyfin_library_ids_pending (None = no change in
-            # flight) is a newly-saved selection sync is still backfilling
-            # library_id for -- see routers/settings.py's select endpoint
-            # and SyncManager._run. Kept separate so changing the selection
-            # never makes the library look empty mid-resync: browsing keeps
-            # showing the old selection's results until the new one's
-            # backfill sync actually succeeds, at which point sync flips
-            # jellyfin_library_ids to match and clears this.
             "jellyfin_library_ids": [],
             "jellyfin_library_ids_pending": None,
             "local_music_path": "",
-            # Incremental-sync checkpoints, one per source — not user-editable,
-            # written by SyncManager after each successful sync.
             "last_synced_at_jellyfin": "",
             "last_synced_at_local": "",
             "use_album_art_for_tracks": True,
@@ -50,9 +37,10 @@ class SettingsManager:
             "enable_genre_enrichment": True,
             "lastfm_api_key": "",
             "enable_radio": True,
+            "analysis_worker_count": 4,
+            "analysis_worker_usage": 25,
             "autoplay_default": False,
             "autoplay_queue_length": 3,
-            # Jellyfin-only; see providers/jellyfin.py's _transcode_preference.
             "enable_transcoding": False,
             "transcode_format": "mp3",
             "transcode_bitrate": "192000",
@@ -70,8 +58,6 @@ class SettingsManager:
             try:
                 user_settings = json.load(f)
                 # Merge defaults with user settings to catch newly added options.
-                # Keys no longer in defaults are dropped so removed settings
-                # don't linger in the file forever.
                 merged = {**self.defaults,
                           **{k: v for k, v in user_settings.items() if k in self.defaults}}
                 # Existing installs upgrading to this version won't have
@@ -105,9 +91,11 @@ class SettingsManager:
         applied = {k: v for k, v in updates.items() if k in self.defaults}
         if not applied:
             return
+        # Only keys whose value actually moved get announced.
+        changed = {k: v for k, v in applied.items() if self.get(k) != v}
         self.settings.update(applied)
         self._save(self.settings)
-        for key, value in applied.items():
+        for key, value in changed.items():
             for cb in self._listeners:
                 try:
                     cb(key, value)
