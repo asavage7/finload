@@ -286,6 +286,28 @@
       ]
     },
     {
+      "id": "sharing",
+      "label": "Analysis Sharing (Experimental)",
+      "settings": [
+        {
+          "key": "export_features",
+          "control": "action",
+          "action": "export_features",
+          "label": "Export analysis data",
+          "description": "Save this library's computed audio-analysis data (BPM, timbre) to a file.",
+          "buttonLabel": "Export…"
+        },
+        {
+          "key": "import_features",
+          "control": "action",
+          "action": "import_features",
+          "label": "Import analysis data",
+          "description": "Load a file exported from another Finload install to skip re-analyzing tracks it already processed.",
+          "buttonLabel": "Import…"
+        }
+      ]
+    },
+    {
       "id": "radio",
       "label": "Radio",
       "settings": [

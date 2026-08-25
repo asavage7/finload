@@ -160,3 +160,129 @@ jobs:
             chmod +x finload_${{ steps.version.outputs.version }}_amd64.AppImage
             ./finload_${{ steps.version.outputs.version }}_amd64.AppImage
             ```
+
+            **Windows**
+
+            Run the installer: `finload_${{ steps.version.outputs.version }}_x64-setup.exe` (or the `.msi` if you prefer MSI-managed installs).
+
+  windows:
+    name: Windows bundles
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building version $version"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: src-backend/requirements.txt
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Stamp the version into every manifest
+        shell: bash
+        run: node scripts/set-version.mjs "${{ steps.version.outputs.version }}"
+
+      - run: npm ci
+
+      # build.rs invokes this venv's pyinstaller by path, so it has to live
+      # exactly here.
+      - name: Create the backend venv
+        shell: bash
+        run: |
+          python -m venv src-backend/.venv
+          src-backend/.venv/Scripts/pip install --upgrade pip
+          src-backend/.venv/Scripts/pip install -r src-backend/requirements.txt
+
+      # Pinned, checksummed download -- see scripts/fetch-mpv-windows.mjs for
+      # why this isn't a winget/choco install like a dev machine might use.
+      - name: Vendor mpv
+        run: npm run vendor:mpv-windows
+
+      - name: Build NSIS and MSI installers
+        run: npm run build:windows
+
+      # build.rs warns rather than fails when it can't find an mpv DLL to
+      # bundle, so a build with no audio would otherwise succeed silently.
+      - name: Verify mpv was bundled
+        shell: bash
+        run: |
+          if [ ! -f src-tauri/binaries/backend/libmpv-2.dll ]; then
+            echo "::error::libmpv-2.dll is missing from the backend bundle -- audio would not work"
+            exit 1
+          fi
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          bundle=src-tauri/target/release/bundle
+          cp "$bundle"/nsis/*.exe dist/
+          cp "$bundle"/msi/*.msi dist/
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finload-windows-${{ steps.version.outputs.version }}
+          path: dist/*
+          retention-days: 14
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: true
+          generate_release_notes: true
+          body: |
+            [Short description]
+
+            ## Changelog
+
+            - [Add changelog here]
+
+            ## Install
+
+            **Debian / Ubuntu** (2024 or newer)
+            ```
+            sudo apt install ./finload_${{ steps.version.outputs.version }}_amd64.deb
+            ```
+
+            **Fedora / openSUSE**
+            ```
+            sudo dnf install ./finload-${{ steps.version.outputs.version }}-1.x86_64.rpm
+            ```
+
+            **Appimage**
+            ```
+            chmod +x finload_${{ steps.version.outputs.version }}_amd64.AppImage
+            ./finload_${{ steps.version.outputs.version }}_amd64.AppImage
+            ```
+
+            **Windows**
+
+            Run the installer: `finload_${{ steps.version.outputs.version }}_x64-setup.exe` (or the `.msi` if you prefer MSI-managed installs).

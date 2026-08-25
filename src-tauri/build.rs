@@ -4,21 +4,42 @@ use std::path::Path;
 use std::process::Command;
 
 fn find_mpv_dll(target: &str) -> Option<String> {
-    if target.contains("windows") {
-        // Common install locations for mpv on Windows
-        let candidates = [
-            r"C:\Program Files\mpv\mpv-2.dll",
-            r"C:\Program Files (x86)\mpv\mpv-2.dll",
-            r"C:\ProgramData\chocolatey\lib\mpv.install\tools\mpv-2.dll",
-            r"C:\ProgramData\scoop\apps\mpv\current\mpv-2.dll",
-        ];
-        for &path in &candidates {
-            if Path::new(path).exists() {
-                return Some(path.to_string());
+    if !target.contains("windows") {
+        return None; // Linux: rely on system libmpv; declared as a .deb dependency in tauri.conf.json
+    }
+
+    // The vendored windows lib is authorative.
+    //
+    // Must be absolute: finload.spec resolves a relative binary path against
+    // its own directory (src-backend/), not against build.rs's cwd
+    // (src-tauri/), so a relative path here silently looks in the wrong tree.
+    let vendored = Path::new("binaries/vendor/mpv/libmpv-2.dll");
+    if vendored.exists() {
+        let absolute = env::current_dir().unwrap().join(vendored);
+        return Some(absolute.to_string_lossy().into_owned());
+    }
+
+    // Fallback for a machine that hasn't run the vendoring script
+    let dirs = [
+        r"C:\Program Files\MPV Player",
+        r"C:\Program Files\mpv",
+        r"C:\Program Files (x86)\mpv",
+        r"C:\ProgramData\chocolatey\lib\mpv.install\tools",
+        r"C:\ProgramData\scoop\apps\mpv\current",
+    ];
+    let names = ["mpv-2.dll", "libmpv-2.dll", "mpv-1.dll"];
+    for dir in dirs {
+        for name in names {
+            let path = Path::new(dir).join(name);
+            if path.exists() {
+                return Some(path.to_string_lossy().into_owned());
             }
         }
-        // Try PATH via `where mpv-2.dll`
-        if let Ok(output) = Command::new("where").arg("mpv-2.dll").output() {
+    }
+
+    // Last resort: whatever's on PATH.
+    for name in names {
+        if let Ok(output) = Command::new("where").arg(name).output() {
             if output.status.success() {
                 let s = String::from_utf8_lossy(&output.stdout);
                 if let Some(line) = s.lines().next() {
@@ -29,10 +50,8 @@ fn find_mpv_dll(target: &str) -> Option<String> {
                 }
             }
         }
-        None
-    } else {
-        None // Linux: rely on system libmpv; declared as a .deb dependency in tauri.conf.json
     }
+    None
 }
 
 fn main() {
@@ -58,6 +77,15 @@ fn main() {
     }
 
     println!("cargo:rerun-if-env-changed=FINLOAD_TRIM_MPV");
+    // Without these, the "rerun-if-env-changed" directive above is the *only*
+    // rerun trigger Cargo knows about, so it caches build.rs's output and
+    // silently skips re-running it -- meaning a Python-only edit doesn't
+    // reach the bundle until something forces a rerun (touching build.rs, a
+    // clean build). Listed individually, not the whole src-backend/ root, so
+    // .venv/ churn doesn't trigger a PyInstaller rebuild on every touch.
+    for entry in ["core", "providers", "routers", "services", "main.py", "finload.spec", "requirements.txt"] {
+        println!("cargo:rerun-if-changed=../src-backend/{entry}");
+    }
     let skip = env::var("SKIP_PYINSTALLER")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
@@ -104,7 +132,7 @@ fn main() {
                 }
                 None => {
                     println!("cargo:warning=mpv-2.dll not found — audio will not work in the bundled app.");
-                    println!("cargo:warning=Install mpv via: winget install mpv  (then re-run the build)");
+                    println!("cargo:warning=Run: npm run vendor:mpv-windows  (then re-run the build)");
                 }
             }
         }

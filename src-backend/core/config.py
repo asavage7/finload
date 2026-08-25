@@ -30,7 +30,13 @@ def get_backend_port() -> int:
 def get_cors_origins() -> list[str]:
     return _split_csv(
         os.getenv("CORS_ORIGINS"),
-        ["http://localhost:1420", "http://localhost:5173", "tauri://localhost", "https://tauri.localhost"],
+        [
+            "http://localhost:1420",
+            "http://localhost:5173",
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+        ],
     )
 
 
