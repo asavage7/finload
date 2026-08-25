@@ -1,20 +1,6 @@
 {
   "sections": [
     {
-      "id": "setup",
-      "label": "Setup",
-      "settings": [
-        {
-          "key": "rerun_setup",
-          "control": "action",
-          "action": "rerun_setup",
-          "label": "Re-run setup wizard",
-          "description": "Reconfigure your library source from scratch.",
-          "buttonLabel": "Re-run setup"
-        }
-      ]
-    },
-    {
       "id": "tasks",
       "label": "Tasks",
       "settings": [
@@ -67,51 +53,12 @@
       "label": "Library",
       "settings": [
         {
-          "key": "library_source",
-          "label": "Library Source",
-          "control": "select",
-          "options": [
-            {
-              "value": "jellyfin",
-              "label": "Jellyfin"
-            },
-            {
-              "value": "local",
-              "label": "Local files"
-            }
-          ]
-        },
-        {
-          "key": "jellyfin_url",
-          "label": "Jellyfin URL",
-          "description": "Base URL of your Jellyfin server, including http://",
-          "control": "text",
-          "placeholder": "http://192.168.1.100:8096",
-          "showIf": {
-            "key": "library_source",
-            "value": "jellyfin"
-          }
-        },
-        {
-          "key": "jellyfin_username",
-          "label": "Username",
-          "control": "text",
-          "placeholder": "username",
-          "showIf": {
-            "key": "library_source",
-            "value": "jellyfin"
-          }
-        },
-        {
-          "key": "jellyfin_password",
-          "label": "Password",
-          "control": "text",
-          "placeholder": "",
-          "hidden": true,
-          "showIf": {
-            "key": "library_source",
-            "value": "jellyfin"
-          }
+          "key": "rerun_setup",
+          "control": "action",
+          "action": "rerun_setup",
+          "label": "Change library source",
+          "description": "Re-runs setup so you can point Finload at a different Jellyfin server or local folder. Finload restarts to do this.",
+          "buttonLabel": "Re-run setup"
         },
         {
           "key": "jellyfin_manage_libraries",
@@ -126,20 +73,11 @@
           }
         },
         {
-          "key": "local_music_path",
-          "label": "Music folder",
-          "control": "text",
-          "placeholder": "/home/user/Music",
-          "showIf": {
-            "key": "library_source",
-            "value": "local"
-          }
-        },
-        {
           "key": "use_album_art_for_tracks",
           "label": "Ignore Individual Track Artwork",
           "description": "Show the album cover for tracks instead of per-track artwork.",
-          "control": "toggle"
+          "control": "toggle",
+          "break": true
         },
         {
           "key": "enable_online_metadata",
@@ -358,6 +296,29 @@
           "control": "toggle"
         },
         {
+          "key": "analysis_worker_count",
+          "label": "Analysis Workers Count",
+          "description": "How many songs to analyze in parallel.",
+          "control": "number",
+          "min": 1,
+          "showIf": {
+            "key": "enable_radio",
+            "value": true
+          }
+        },
+        {
+          "key": "analysis_worker_usage",
+          "label": "Analysis Workers Usage",
+          "description": "What percent of CPU time to use for analysis.",
+          "control": "number",
+          "min": 1,
+          "max": 100,
+          "showIf": {
+            "key": "enable_radio",
+            "value": true
+          }
+        },
+        {
           "key": "autoplay_default",
           "label": "Automatically start autoplay when queue ends",
           "control": "toggle",
@@ -371,6 +332,7 @@
           "label": "Minimum number of tracks to queue for autoplay",
           "control": "number",
           "min": 1,
+          "max": 25,
           "showIf": {
             "key": "enable_radio",
             "value": true

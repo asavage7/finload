@@ -8,7 +8,10 @@ Subclasses implement only ``_run(self, *args, **kwargs)`` and call
 re-entrancy guarding, exception handling, listener broadcasting) lives here
 once instead of being copy-pasted per job.
 """
+import logging
 import threading
+
+logger = logging.getLogger(__name__)
 
 
 class BackgroundJob:
@@ -56,7 +59,7 @@ class BackgroundJob:
         """Call between work items in a long-running _run loop. Blocks here
         for as long as another job holds this one paused."""
         if not self._pause_event.is_set():
-            self._emit(message="Paused for library sync…")
+            self._emit(message="Paused for library sync...")
             self._pause_event.wait()
 
     # --- listeners -----------------------------------------------------
@@ -71,7 +74,9 @@ class BackgroundJob:
     def _emit(self, **changes):
         self.state.update(changes)
         snapshot = dict(self.state)
-        for listener in self.listeners:
+        # Snapshot the list: a websocket disconnecting can remove_listener from
+        # another thread mid-broadcast, which would break the iteration itself.
+        for listener in list(self.listeners):
             try:
                 listener(snapshot)
             except Exception:
@@ -83,7 +88,7 @@ class BackgroundJob:
         with self._lock:
             if self.is_running:
                 return False
-            self.state.update(status="running", message="Starting…",
+            self.state.update(status="running", message="Starting...",
                               processed=0, total=0, **self.EXTRA_STATE)
         threading.Thread(target=self._run_wrapper, args=args, kwargs=kwargs, daemon=True).start()
         return True
@@ -92,7 +97,13 @@ class BackgroundJob:
         try:
             self._run(*args, **kwargs)
         except Exception as exc:
-            self._emit(status="error", message=str(exc))
+            logger.exception("Background job failed")
+            self._emit(status="error", message=str(exc) or type(exc).__name__)
+        finally:
+            # A _run that returns without emitting a terminal status would
+            # otherwise leave the job stuck "running" and unstartable forever.
+            if self.is_running:
+                self._emit(status="complete")
 
     def _run(self, *args, **kwargs):
         raise NotImplementedError

@@ -10,8 +10,13 @@ from peewee import JOIN, fn
 from core import state
 from core.database import (Album, AlbumGenre, Artist, ArtistGenre, Genre, PlayHistory, Track,
                       TrackLyrics, track_scope_clause)
+from services import discovery
 
 router = APIRouter()
+
+# Similar-artist candidates ranked before the guest-credit/duplicate-name filters
+# in _similar_artists thin the list down to the caller's cap.
+_SIMILAR_ARTIST_POOL = 60
 
 
 def _library_scope():
@@ -302,37 +307,13 @@ def _more_by_artist(album_id: str, artist_id: str | None, cap: int = 20) -> list
     return [_serialize_album_row(a) for a in albums]
 
 
-def _similar_albums_by_genre(album_id: str, exclude_artist_id: str | None, cap: int = 20) -> list[dict]:
-    """Other albums ranked by shared-genre overlap. Will eventually incorporate audio analysis."""
-    this_weight: dict[str, int] = {}
-    for row in (AlbumGenre.select(AlbumGenre.genre.alias("gid"), AlbumGenre.weight.alias("w"))
-                .where(AlbumGenre.album == album_id).dicts()):
-        this_weight[row["gid"]] = max(this_weight.get(row["gid"], 0), row["w"])
-    if not this_weight:
-        return []
-
-    shared_genres: dict[str, set] = {}
-    score: dict[str, float] = {}
-    rows = (AlbumGenre
-            .select(AlbumGenre.album.alias("eid"), AlbumGenre.genre.alias("gid"), AlbumGenre.weight.alias("w"))
-            .where(AlbumGenre.genre << list(this_weight.keys()), AlbumGenre.album != album_id)
-            .dicts())
-    for row in rows:
-        eid = row["eid"]
-        shared_genres.setdefault(eid, set()).add(row["gid"])
-        score[eid] = score.get(eid, 0) + max(row["w"], 1) * max(this_weight.get(row["gid"], 1), 1)
-
-    candidate_ids = list(shared_genres.keys())
-    if exclude_artist_id and candidate_ids:
-        same_artist_ids = {
-            a.id for a in Album.select(Album.id)
-            .where(Album.id << candidate_ids, Album.artist == exclude_artist_id)
-        }
-        candidate_ids = [aid for aid in candidate_ids if aid not in same_artist_ids]
-
-    ordered_ids = sorted(
-        candidate_ids, key=lambda eid: (-len(shared_genres[eid]), -score[eid])
-    )[:cap]
+def _similar_albums(album_id: str, exclude_artist_id: str | None, cap: int = 20,
+                     index=None) -> list[dict]:
+    """Albums most similar to this one, best first (see discovery.similar_albums)."""
+    ordered_ids = discovery.similar_albums(
+        album_id, cap=cap, exclude_artist_id=exclude_artist_id,
+        library_ids=state.settings.get("jellyfin_library_ids"), index=index,
+    )
     return _serialize_albums_in_order(ordered_ids)
 
 
@@ -353,57 +334,23 @@ def _appears_on_albums(artist_id: str, cap: int = 20) -> list[dict]:
     return [_serialize_album_row(a) for a in albums]
 
 
-def _artist_genre_weights(artist_id: str) -> dict[str, int]:
-    """Combined artist/album genre weights."""
-    weight: dict[str, int] = {}
-    for row in (ArtistGenre.select(ArtistGenre.genre.alias("gid"), ArtistGenre.weight.alias("w"))
-                .where(ArtistGenre.artist == artist_id).dicts()):
-        weight[row["gid"]] = max(weight.get(row["gid"], 0), row["w"])
+def _similar_artists(artist_id: str, cap: int = 20, index=None) -> list[dict]:
+    """Artists most similar to this one, best first (see discovery.similar_artists).
 
-    album_ids = [a.id for a in Album.select(Album.id).where(Album.artist == artist_id)]
-    if album_ids:
-        for row in (AlbumGenre.select(AlbumGenre.genre.alias("gid"), AlbumGenre.weight.alias("w"))
-                    .where(AlbumGenre.album << album_ids).dicts()):
-            weight[row["gid"]] = max(weight.get(row["gid"], 0), row["w"])
-    return weight
-
-
-def _similar_artists_by_genre(artist_id: str, cap: int = 20) -> list[dict]:
-    """Similar artists, ranked by genre overlap. Will eventually incorporate audio analysis."""
-    this_weight = _artist_genre_weights(artist_id)
-    if not this_weight:
-        return []
-    genre_ids = list(this_weight.keys())
-
-    shared_genres: dict[str, set] = {}
-    score: dict[str, float] = {}
-
-    def _accumulate(eid: str, gid: str, w: int) -> None:
-        shared_genres.setdefault(eid, set()).add(gid)
-        score[eid] = score.get(eid, 0) + max(w, 1) * max(this_weight.get(gid, 1), 1)
-
-    for row in (ArtistGenre
-                .select(ArtistGenre.artist.alias("eid"), ArtistGenre.genre.alias("gid"), ArtistGenre.weight.alias("w"))
-                .where(ArtistGenre.genre << genre_ids, ArtistGenre.artist != artist_id)
-                .dicts()):
-        _accumulate(row["eid"], row["gid"], row["w"])
-
-    for row in (AlbumGenre
-                .select(Album.artist.alias("eid"), AlbumGenre.genre.alias("gid"), AlbumGenre.weight.alias("w"))
-                .join(Album, on=(AlbumGenre.album == Album.id))
-                .where(AlbumGenre.genre << genre_ids, Album.artist != artist_id)
-                .dicts()):
-        _accumulate(row["eid"], row["gid"], row["w"])
-
-    ordered_ids = sorted(
-        shared_genres.keys(), key=lambda eid: (-len(shared_genres[eid]), -score[eid])
+    Ranked over the whole library rather than capped up front, because the two
+    filters below reject candidates after scoring: an artist credited only as a
+    guest (no albums of their own) isn't really a similar artist, and providers
+    mint several ids for one name often enough that the row would otherwise
+    repeat the same artist.
+    """
+    ordered_ids = discovery.similar_artists(
+        artist_id, cap=_SIMILAR_ARTIST_POOL,
+        library_ids=state.settings.get("jellyfin_library_ids"), index=index,
     )
     if not ordered_ids:
         return []
-
     artists_by_id = {a.id: a for a in _artists_with_aggregates(where_clause=(Artist.id << ordered_ids))}
 
-    # Skip guest credit entries that are just one album by one artist, since those aren't really "similar" artists.
     results: list[dict] = []
     seen_names: set[str] = set()
     for aid in ordered_ids:
@@ -554,10 +501,10 @@ def _weighted_recent_genres(k: int, window: int = _AFFINITY_WINDOW) -> list[dict
     return picks
 
 
-def _similar_artist_albums(seed_artist_id: str, cap: int) -> list[dict]:
-    """One representative album per genre-similar artist."""
+def _similar_artist_albums(seed_artist_id: str, cap: int, index=None) -> list[dict]:
+    """One representative album per similar artist."""
     albums: list[dict] = []
-    for artist_row in _similar_artists_by_genre(seed_artist_id, cap=cap):
+    for artist_row in _similar_artists(seed_artist_id, cap=cap, index=index):
         candidates = _albums_with_aggregates(
             where_clause=(Album.artist == artist_row["id"]), order_by=fn.Random(), limit=1
         )
@@ -568,9 +515,9 @@ def _similar_artist_albums(seed_artist_id: str, cap: int) -> list[dict]:
     return albums
 
 
-def _artist_affinity_seed_album(seed_artist_id: str, exclude_ids: set) -> dict | None:
+def _artist_affinity_seed_album(seed_artist_id: str, exclude_ids: set, index=None) -> dict | None:
     """Select a seed album for an artist, same as above."""
-    for artist_row in _similar_artists_by_genre(seed_artist_id, cap=5):
+    for artist_row in _similar_artists(seed_artist_id, cap=5, index=index):
         albums = _albums_with_aggregates(
             where_clause=(Album.artist == artist_row["id"]), order_by=fn.Random(), limit=1
         )
@@ -620,9 +567,15 @@ def get_home():
     artist_affinity_names: dict[str, str] = {}
     genre_affinity_rows: list[dict] = []
     genre_hero_albums: list[tuple[str, str, dict]] = []
+    entity_index = None
     if total_tracks >= _AFFINITY_MIN_LIBRARY_TRACKS:
+        # One index for every affinity comparison below (see
+        # discovery.load_entity_index): building it is the whole cost, and this
+        # endpoint would otherwise rebuild it once per seed artist.
+        entity_index = discovery.load_entity_index(state.settings.get("jellyfin_library_ids"))
         for seed_artist_id in _weighted_recent_ids(Track.artist, k=3):
-            similar_albums = _similar_artist_albums(seed_artist_id, cap=_HOME_ROW_LIMIT)
+            similar_albums = _similar_artist_albums(seed_artist_id, cap=_HOME_ROW_LIMIT,
+                                                    index=entity_index)
             if len(similar_albums) < _MIN_SMART_ROW_ITEMS:
                 continue
             seed_artist = Artist.get_or_none(Artist.id == seed_artist_id)
@@ -682,7 +635,7 @@ def get_home():
 
     seen_so_far = {a["id"] for _, _, a in hero_pool}
     for seed_artist_id, seed_name in artist_affinity_names.items():
-        seed_album = _artist_affinity_seed_album(seed_artist_id, seen_so_far)
+        seed_album = _artist_affinity_seed_album(seed_artist_id, seen_so_far, index=entity_index)
         if seed_album:
             hero_pool.append(("artist_affinity", f"Because You've Listened to {seed_name}", seed_album))
             seen_so_far.add(seed_album["id"])
@@ -755,7 +708,7 @@ def get_album_details(album_id: str):
         },
         "discs": [{"disc_number": d, "tracks": discs_map[d]} for d in sorted(discs_map)],
         "more_by_artist": _more_by_artist(album.id, artist_id),
-        "similar_albums": _similar_albums_by_genre(album.id, artist_id),
+        "similar_albums": _similar_albums(album.id, artist_id),
     }
 
 
@@ -822,7 +775,7 @@ def get_artist_details(artist_id: str):
             for a in artist_albums
         ],
         "appears_on": _appears_on_albums(artist.id),
-        "similar_artists": _similar_artists_by_genre(artist.id),
+        "similar_artists": _similar_artists(artist.id),
     }
 
 
@@ -850,26 +803,6 @@ def get_artist_tracks(artist_id: str):
         for t in tracks
     ]
     
-@router.get("/api/track/{track_id}/details")
-def get_track_details(track_id: str):
-    track = Track.get_or_none(Track.id == track_id)
-    if not track:
-        raise HTTPException(status_code=404, detail="Track not found")
-    
-    return {
-        "id": str(track.id),
-        "title": str(track.title),
-        "album_id": str(track.album.id) if track.album else None,
-        "album_title": str(track.album.title) if track.album else "Unknown Album",
-        "artist_id": str(track.artist.id) if track.artist else None,
-        "artist_name": str(track.artist.name) if track.artist else "Unknown Artist",
-        "disc_number": track.disc_number,
-        "track_number": track.track_number,
-        "duration_ms": track.duration_ms,
-        "rating": track.rating,
-    }
-
-
 @router.get("/api/genre/{genre_id}")
 def get_genre_details(genre_id: str):
     """Everything tagged with one genre: albums/artists/tracks, best (highest

@@ -1,12 +1,11 @@
 """Library search: normalization, relevance scoring, and the /api/search route."""
-import datetime
 import re
 
 from fastapi import APIRouter
 from peewee import JOIN, fn
 
 from core import state
-from core.database import Album, Artist, SearchHistory, Track, db as peewee_db, track_scope_clause
+from core.database import Album, Artist, Track, db as peewee_db, track_scope_clause
 
 router = APIRouter()
 
@@ -92,25 +91,6 @@ def _match_all_tokens(fields, tokens):
     return clause
 
 
-def _record_search(q: str):
-    """Store the query in SearchHistory.
-
-    Typing produces a burst of prefix queries ("f", "fl", "fly", ...), so if
-    the newest history row is a prefix of this query (or the other way round,
-    for backspacing) it's updated in place instead of adding a new row.
-    """
-    try:
-        last = SearchHistory.select().order_by(SearchHistory.timestamp.desc()).first()
-        if last and (q.startswith(last.query) or last.query.startswith(q)):
-            last.query = q
-            last.timestamp = datetime.datetime.now()
-            last.save()
-        else:
-            SearchHistory.create(query=q)
-    except Exception:
-        pass
-
-
 # How many DB candidates to score per entity type. Bounds work while leaving
 # plenty of headroom above the handful of results actually returned.
 _SEARCH_CANDIDATES = 40
@@ -121,7 +101,6 @@ def search(q: str = "", limit: int = 5):
     q = _normalize(q)
     if not q:
         return {"results": []}
-    _record_search(q)
     limit = max(1, min(limit, 20))
     tokens = q.split()
     scored: list[tuple[int, dict]] = []

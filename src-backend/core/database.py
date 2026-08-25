@@ -1,6 +1,7 @@
 from peewee import (
     EXCLUDED,
     BooleanField,
+    Case,
     CharField,
     DateTimeField,
     FloatField,
@@ -160,16 +161,6 @@ class PlaylistTrack(BaseModel):
         )
 
 
-class SearchHistory(BaseModel):
-    query = CharField()
-    timestamp = DateTimeField(default=datetime.datetime.now)
-
-    class Meta:
-        indexes = (
-            (('timestamp',), False),
-        )
-
-
 class PlayHistory(BaseModel):
     track = ForeignKeyField(Track, backref='history')
     played_at = DateTimeField(default=datetime.datetime.now)
@@ -207,26 +198,33 @@ class PlaybackState(BaseModel):
 ALL_MODELS = [
     SchemaVersion, Artist, Album, Track, TrackLyrics, TrackFeatures,
     Genre, AlbumGenre, ArtistGenre,
-    Playlist, PlaylistTrack,
-    SearchHistory, PlayHistory,
+    Playlist, PlaylistTrack, PlayHistory,
     QueueItem, PlaybackState,
 ]
 
 
-def _ensure_genre_indexes(db):
-    """Case-insensitive uniqueness on Genre.name.
+# Indexes Peewee's Meta.indexes can't express (COLLATE NOCASE) or that cover
+# FK columns, which SQLite does not index automatically.
+_EXTRA_INDEXES = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS genre_name_nocase ON genre (name COLLATE NOCASE)",
+    "CREATE INDEX IF NOT EXISTS artist_name_nocase ON artist (name COLLATE NOCASE)",
+    "CREATE INDEX IF NOT EXISTS track_album_id ON track (album_id)",
+    "CREATE INDEX IF NOT EXISTS track_artist_id ON track (artist_id)",
+    "CREATE INDEX IF NOT EXISTS track_library_id ON track (library_id)",
+    "CREATE INDEX IF NOT EXISTS album_artist_id ON album (artist_id)",
+)
 
-    Peewee's Meta.indexes can't express COLLATE NOCASE on an index, so
-    this is created directly rather than declared on the model.
-    """
-    db.execute_sql(
-        "CREATE UNIQUE INDEX IF NOT EXISTS genre_name_nocase ON genre (name COLLATE NOCASE)"
-    )
+
+def _ensure_extra_indexes(db):
+    for statement in _EXTRA_INDEXES:
+        db.execute_sql(statement)
 
 
 def switch_database(source: str | None = None) -> "DatabaseManager":
-    """Change databases when a user switches library sources or when DATABASE_PATH is overridden.
-    Likely to be replaced by an app restart in the future.
+    """Point the connection at the database for a library source.
+
+    Called at startup, and once more during first-run setup if the user picks a
+    source other than the default (see state.switch_source).
     """
     new_path = str(get_database_path(source))
     current = getattr(db, 'database', None)
@@ -250,14 +248,14 @@ class DatabaseManager:
 
         if 'artist' not in existing_tables:
             db.create_tables(ALL_MODELS)
-            _ensure_genre_indexes(db)
+            _ensure_extra_indexes(db)
             SchemaVersion.create(id=1, version=SCHEMA_VERSION)
             return
 
         db.create_tables([SchemaVersion], safe=True)
         version_row = SchemaVersion.get_or_none(SchemaVersion.id == 1)
         current_version = version_row.version if version_row else 0
-        
+
         # Run pending migrations if necessary
         if current_version < SCHEMA_VERSION:
             with db.atomic():
@@ -271,33 +269,13 @@ class DatabaseManager:
         # Pick up new tables/columns automatically to reduce needed migrations
         db.create_tables(ALL_MODELS, safe=True)
         ensure_model_columns(db, ALL_MODELS)
-        _ensure_genre_indexes(db)
+        _ensure_extra_indexes(db)
 
-    def find_artist_id_by_name(self, name: str) -> str | None:
-        """Jellyfin can use different IDs for the same artist, sync looks up by name to avoid duplicates."""
-        row = Artist.get_or_none(Artist.name.collate("NOCASE") == name)
-        return row.id if row else None
-
-    def upsert_artist(self, **data):
-        Artist.insert(**data).on_conflict(
-            conflict_target=[Artist.id],
-            preserve=[Artist.name, Artist.mbid]
-        ).execute()
-
-    def upsert_album(self, **data):
-        Album.insert(**data).on_conflict(
-            conflict_target=[Album.id],
-            preserve=[Album.title, Album.artist, Album.release_year, Album.provider, Album.mbid]
-        ).execute()
-
-    def upsert_track(self, **data):
-        """Avoids tracks being marked as added_at=now() when the provider didn't supply a timestamp, but the track already exists in the DB."""
-        data.setdefault("added_at", datetime.datetime.now())
-        Track.insert(**data).on_conflict(
-            conflict_target=[Track.id],
-            preserve=_TRACK_PRESERVE_ON_CONFLICT,
-            update={Track.added_at: fn.COALESCE(Track.added_at, EXCLUDED.added_at)}
-        ).execute()
+    def artist_ids_by_name(self) -> dict:
+        """Lowercased artist name -> id, for every known artist, in one query.
+        Providers can mint several ids per artist; sync reconciles by name."""
+        return {row.name.strip().lower(): row.id
+                for row in Artist.select(Artist.id, Artist.name)}
 
     def save_track_features(self, track_id: str, bpm: float, mfcc_mean: list,
                              mfcc_std: list, contrast_mean: list) -> None:
@@ -308,38 +286,49 @@ class DatabaseManager:
                                  "contrast_mean": contrast_mean}),
         ).on_conflict_replace().execute()
 
+    def save_hubness_stats(self, stats: list) -> None:
+        """Bulk-write (track_id, dist_center, dist_scale) triples. One CASE
+        expression per batch instead of one UPDATE statement per track."""
+        with db.atomic():
+            for batch in _chunks(stats, 500):
+                ids = [track_id for track_id, _, _ in batch]
+                center = Case(TrackFeatures.track, [(t, c) for t, c, _ in batch])
+                scale = Case(TrackFeatures.track, [(t, s) for t, _, s in batch])
+                (TrackFeatures
+                 .update(dist_center=center, dist_scale=scale)
+                 .where(TrackFeatures.track << ids)
+                 .execute())
+
     def _genre_ids_by_name(self, names: set) -> dict:
-        """Returns a dictionary mapping genre names to their IDs."""
-        genre_ids = {}
-        for name in names:
-            genre = Genre.get_or_none(Genre.name.collate("NOCASE") == name)
-            if genre is None:
-                genre = Genre.create(id=stable_genre_id(name), name=name.title())
-            genre_ids[name.lower()] = genre.id
+        """Lowercased genre name -> id, creating any that don't exist yet.
+        stable_genre_id makes the id a pure function of the name, so the whole
+        set can be resolved without querying or inserting one row at a time."""
+        genre_ids = {name.strip().lower(): stable_genre_id(name) for name in names}
+        rows = [{"id": gid, "name": name.title()} for name, gid in genre_ids.items()]
+        for batch in _chunks(rows, 200):
+            Genre.insert_many(batch).on_conflict_ignore().execute()
         return genre_ids
 
     def link_genres(self, album_genres: list | None = None, artist_genres: list | None = None):
-        """Attach genres to albums/artists."""
-        album_genres = album_genres or []
-        artist_genres = artist_genres or []
+        """Attach genres to albums/artists. Input tuples are (entity_id, name,
+        source, weight); duplicates within a call are collapsed."""
+        album_genres = set(album_genres or ())
+        artist_genres = set(artist_genres or ())
         names = ({name for _, name, _, _ in album_genres}
                  | {name for _, name, _, _ in artist_genres})
         if not names:
             return
         with db.atomic():
             genre_ids = self._genre_ids_by_name(names)
-            for batch in _chunks(album_genres, 200):
-                rows = [
-                    {"album": eid, "genre": genre_ids[name.lower()], "source": source, "weight": weight}
-                    for eid, name, source, weight in batch
-                ]
-                AlbumGenre.insert_many(rows).on_conflict_ignore().execute()
-            for batch in _chunks(artist_genres, 200):
-                rows = [
-                    {"artist": eid, "genre": genre_ids[name.lower()], "source": source, "weight": weight}
-                    for eid, name, source, weight in batch
-                ]
-                ArtistGenre.insert_many(rows).on_conflict_ignore().execute()
+            links = ((AlbumGenre, "album", album_genres), (ArtistGenre, "artist", artist_genres))
+            for model, column, pairs in links:
+                for batch in _chunks(sorted(pairs), 200):
+                    rows = [
+                        {column: eid, "genre": genre_ids[name.strip().lower()],
+                         "source": source, "weight": weight}
+                        for eid, name, source, weight in batch
+                    ]
+                    model.insert_many(rows).on_conflict_ignore().execute()
 
     def delete_tracks(self, track_ids):
         """Delete tracks by ID."""
@@ -365,29 +354,35 @@ class DatabaseManager:
             ).execute()
         return albums_removed, artists_removed
 
+    @staticmethod
+    def _insert_rows(model, rows: list, **conflict):
+        """insert_many in chunks, grouped by key set. Peewee reads the column
+        list off the first row only, so a batch of dicts with differing keys
+        silently drops the odd ones out."""
+        by_shape: dict = {}
+        for row in rows:
+            by_shape.setdefault(frozenset(row), []).append(row)
+        for shaped in by_shape.values():
+            for batch in _chunks(shaped, 100):
+                model.insert_many(batch).on_conflict(**conflict).execute()
+
     def bulk_upsert(self, artists: list, albums: list, tracks: list,
                      album_genres: list | None = None):
         """Faster syncing by batch updating in chunks."""
+        now = datetime.datetime.now()
+        for t in tracks:
+            # Providers only supply added_at when the source has a real one.
+            t.setdefault("added_at", now)
         with db.atomic():
-            for batch in _chunks(artists, 100):
-                Artist.insert_many(batch).on_conflict(
-                    conflict_target=[Artist.id],
-                    preserve=[Artist.name, Artist.mbid]
-                ).execute()
-            for batch in _chunks(albums, 100):
-                Album.insert_many(batch).on_conflict(
-                    conflict_target=[Album.id],
-                    preserve=[Album.title, Album.artist, Album.release_year, Album.provider, Album.mbid]
-                ).execute()
-            for batch in _chunks(tracks, 100):
-                now = datetime.datetime.now()
-                for t in batch:
-                    t.setdefault("added_at", now)
-                Track.insert_many(batch).on_conflict(
-                    conflict_target=[Track.id],
-                    preserve=_TRACK_PRESERVE_ON_CONFLICT,
-                    update={Track.added_at: fn.COALESCE(Track.added_at, EXCLUDED.added_at)}
-                ).execute()
+            self._insert_rows(Artist, artists, conflict_target=[Artist.id],
+                              preserve=[Artist.name, Artist.mbid])
+            self._insert_rows(Album, albums, conflict_target=[Album.id],
+                              preserve=[Album.title, Album.artist, Album.release_year,
+                                        Album.provider, Album.mbid])
+            self._insert_rows(Track, tracks, conflict_target=[Track.id],
+                              preserve=_TRACK_PRESERVE_ON_CONFLICT,
+                              update={Track.added_at: fn.COALESCE(Track.added_at,
+                                                                  EXCLUDED.added_at)})
 
         if album_genres:
             self.link_genres(album_genres=album_genres)

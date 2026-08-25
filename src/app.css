@@ -47,24 +47,3 @@ samp {
 	font-feature-settings: "tnum";
 }
 
-/* Transitions for slide-in animations */
-
-@keyframes slide-in-left {
-  from { transform: translateX(28px); opacity: 0; }
-  to   { transform: translateX(0);    opacity: 1; }
-}
-@keyframes slide-in-right {
-  from { transform: translateX(-28px); opacity: 0; }
-  to   { transform: translateX(0);     opacity: 1; }
-}
-.slide-in-left  { animation: slide-in-left  180ms ease-out; }
-.slide-in-right { animation: slide-in-right 180ms ease-out; }
-
-/* Background orbs for the onboarding flow. */
-.onboarding-orb {
-	position: absolute;
-	border-radius: 9999px;
-	transform: translate(-50%, -50%);
-	transition-property: top, left, width, height;
-	transition-timing-function: ease-in-out;
-}

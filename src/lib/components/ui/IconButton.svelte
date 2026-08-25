@@ -27,6 +27,6 @@
           : "text-zinc-400 border-transparent";
 </script>
 
-<button bind:this={el} on:click {...$$restProps} class="rounded-full transition border flex gap-2 items-center hover:cursor-pointer {text ? 'text-sm pr-3 py-1.5 pl-2' : 'p-2'} {baseClass} {hoverClass} {cls}">
+<button bind:this={el} on:click {...$$restProps} class="rounded-full transition border flex gap-2 items-center hover:cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none {text ? 'text-sm pr-3 py-1.5 pl-2' : 'p-2'} {baseClass} {hoverClass} {cls}">
   <slot />
 </button>

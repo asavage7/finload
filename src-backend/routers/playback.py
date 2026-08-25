@@ -149,30 +149,6 @@ def start_radio_playlist(playlist_id: str):
     return {"status": "success"}
 
 
-@router.post("/api/playback/toggle_pause")
-def toggle_pause():
-    state.playback.toggle_pause()
-    return {"is_paused": state.playback.is_paused}
-
-
-@router.post("/api/playback/next")
-def skip_next():
-    state.playback.skip_next()
-    return {"status": "success"}
-
-
-@router.post("/api/playback/prev")
-def skip_prev():
-    state.playback.skip_prev()
-    return {"status": "success"}
-
-
-@router.post("/api/playback/seek/{seconds}")
-def seek(seconds: float):
-    state.playback.seek(seconds)
-    return {"status": "success"}
-
-
 @router.post("/api/playback/add_to_queue")
 def add_to_queue(
     track_id: str | list[str] = Body(...),
@@ -191,37 +167,6 @@ def play_next(
     tracks = [track_id] if isinstance(track_id, str) else track_id
     state.playback.add_to_play_next(tracks, top=top)
     return {"status": "success"}
-
-
-@router.post("/api/playback/remove_from_queue/{queue_item_id}")
-def remove_from_queue(queue_item_id: str):
-    state.playback.remove_from_queue(queue_item_id)
-    return {"status": "success"}
-
-
-@router.post("/api/playback/jump_to_queue_item/{queue_item_id}")
-def jump_to_queue_item(queue_item_id: str):
-    state.playback.jump_to_queue_item(queue_item_id)
-    return {"status": "success"}
-
-
-@router.get("/api/playback/queue")
-def get_queue():
-    playback = state.playback
-    current = playback._get_current()
-    current_id = current.id if current else None
-    queue = QueueItem.select(QueueItem, Track, Artist).join(Track).join(Artist).order_by(QueueItem.position)
-    return [
-        {
-            "id": q.id,
-            "track_id": q.track.id,
-            "title": q.track.title,
-            "artist_name": q.track.artist.name if q.track.artist else "Unknown Artist",
-            "duration_ms": q.track.duration_ms,
-            "is_current": q.id == current_id,
-        }
-        for q in queue
-    ]
 
 
 def _move_queue_item(item_id, position):

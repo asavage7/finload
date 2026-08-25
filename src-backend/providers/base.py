@@ -16,8 +16,11 @@ See database.py for more information on what each field means.
 """
 from abc import ABC, abstractmethod
 from typing import Iterator, List, Optional, Set
+import io
 import os
+import threading
 
+from PIL import Image
 from platformdirs import user_cache_dir
 
 
@@ -36,6 +39,34 @@ def cached_image_path(item_id: str, size_px: int = 0) -> str:
     """
     suffix = str(size_px) if size_px > 0 else "original"
     return os.path.join(get_cache_dir(), f"{item_id}_{suffix}.jpg")
+
+
+def atomic_write_bytes(data: bytes, dest_path: str) -> None:
+    """Write bytes to dest_path via a per-call temp file + rename."""
+    tmp_path = f"{dest_path}.{os.getpid()}-{threading.get_ident()}.tmp"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+        os.replace(tmp_path, dest_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def resize_and_save_jpeg(data: bytes, dest_path: str, max_width: int = 0, quality: int = 88) -> None:
+    """Decode image bytes, optionally downscale to max_width, and atomically
+    save as JPEG at dest_path. Raises on failure."""
+    with Image.open(io.BytesIO(data)) as img:
+        img = img.convert("RGB")
+        if max_width and img.width > max_width:
+            ratio = max_width / img.width
+            img = img.resize((max_width, max(1, round(img.height * ratio))), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=quality)
+    atomic_write_bytes(buf.getvalue(), dest_path)
 
 
 class MediaProvider(ABC):
@@ -88,6 +119,12 @@ class MediaProvider(ABC):
         """Returns a URL/path to read for audio analysis.
         For remote sources this can be a lower bitrate version to save resources."""
         return self.get_stream_url(track_id)
+
+    def reauthenticate(self) -> bool:
+        """Re-exchange stored credentials for a fresh token, for callers that read
+        a stream URL directly instead of through the provider's own request
+        helper. False when the provider has no credentials to refresh."""
+        return False
 
     # Images
     def get_cached_image_path(self, item_id: str, size_px: int = 0) -> str:

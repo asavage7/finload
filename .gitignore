@@ -6,7 +6,6 @@ node_modules
 /package
 .env
 .env.*
-!.env.example
 *.db
 src-backend/*.db
 src-backend/.venv/

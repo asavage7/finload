@@ -1,4 +1,4 @@
-"""Generic background-job routes: start / status / live progress."""
+"""Generic background-job routes: list / start / live progress."""
 import asyncio
 
 from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconnect
@@ -39,11 +39,6 @@ def start_job(name: str, force: bool = Body(False, embed=True)):
     return {"started": started, "status": job.state["status"]}
 
 
-@router.get("/api/jobs/{name}/status")
-def job_status(name: str):
-    return _get_job(name).state
-
-
 @router.websocket("/ws/jobs/{name}")
 async def job_ws(websocket: WebSocket, name: str):
     job = state.jobs.get(name)
@@ -59,10 +54,9 @@ async def job_ws(websocket: WebSocket, name: str):
 
     job.add_listener(on_update)
     try:
+        # The socket is push-only; receiving is just how a disconnect surfaces.
         while True:
-            data = await websocket.receive_json()
-            if data.get("action") == "start":
-                _start(job, name, bool(data.get("force", False)))
+            await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
