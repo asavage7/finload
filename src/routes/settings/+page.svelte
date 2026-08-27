@@ -118,6 +118,26 @@
     };
   }
 
+  async function beginJob(name: string, currentState: JobState, force: boolean) {
+    // Optimistic UI update
+    setJobState(name, {
+      ...currentState,
+      status: "running",
+      message: "Starting…",
+      processed: 0,
+      total: 0,
+    });
+    try {
+      await startJob(name, force);
+    } catch {
+      setJobState(name, {
+        ...currentState,
+        status: "error",
+        message: "Could not reach backend",
+      });
+    }
+  }
+
   async function runJob(name: string, task: TaskDisplay, force: boolean) {
     if (!task.enabled || task.state.status === "running") return;
     if (force) {
@@ -128,23 +148,7 @@
       });
       if (!ok) return;
     }
-    // Optimistic UI update
-    setJobState(name, {
-      ...task.state,
-      status: "running",
-      message: "Starting…",
-      processed: 0,
-      total: 0,
-    });
-    try {
-      await startJob(name, force);
-    } catch {
-      setJobState(name, {
-        ...task.state,
-        status: "error",
-        message: "Could not reach backend",
-      });
-    }
+    await beginJob(name, task.state, force);
   }
 
   async function loadJobs() {
@@ -253,8 +257,8 @@
     if (copy) navigator.clipboard.writeText(details);
   }
 
-  function handleToggle(setting: SettingDef) {
-    saveSetting(setting.key, !values[setting.key]);
+  async function handleToggle(setting: SettingDef) {
+    await saveSetting(setting.key, !values[setting.key]);
   }
 
   function handleSelect(setting: SettingDef, e: Event) {
