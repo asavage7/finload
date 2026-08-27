@@ -1,25 +1,16 @@
-"""Audio feature extraction: per-track librosa DSP features (BPM, plus a timbre
-vector of 13 MFCC means, 13 MFCC standard deviations, and 7 spectral contrast
-means), cached once and reused by the discovery queue builder (see discovery.py)
-so no audio decoding happens on the playback hot path.
+"""Main service for DSP audio analysis via librosa.
 
-librosa runs here with numba/llvmlite replaced by a pure-Python shim (see
-_numba_shim and _ensure_librosa) to keep ~200 MB of native LLVM out of the
-PyInstaller bundle. The MFCC variance and spectral contrast were chosen by
-ablation; chroma was tested and dropped.
+Analyzing audio happens once in a large library-wide pass and then is stored
+in the DB for use with the recommendation rows and radio/autoplay.
 
-AudioFeatureManager runs the library-wide pass as a BackgroundJob, fanning the
-CPU-bound analysis across a multiprocessing pool that is throttled two ways so
-it stays out of the user's way: a hard duty-cycle cap per worker
-(_throttled_analyze) and a lowered scheduler niceness (POSIX only). Both, plus
-the worker count, come from settings and are read only when a pool starts -- a
-Pool can't be resized in place -- so a change mid-run asks _run to tear the pool
-down and start a fresh pass. That is lossless: the un-analyzed-tracks query
-excludes whatever the previous pass already wrote.
+librosa runs here with numba/llvmlite replaced by a python shim (caution: shim
+is AI generated mostly)
+
+Runs as a background job alongside sync, genre discovery, and artist enrichment.
 
 ensure_features is the foreground counterpart, for the handful of tracks radio
-needs right now (see PlaybackManager.start_radio). It runs unthrottled in the
-caller's thread rather than through the pool, since someone is waiting on it.
+needs right now (see PlaybackManager.start_radio). It skips the job entirely
+since it's needed basically immediately and analyzes 4 tracks at most.
 """
 import concurrent.futures as cf
 import json
@@ -30,6 +21,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 
 from core.config import get_data_dir
 from core.database import Track, TrackFeatures
@@ -38,25 +30,26 @@ from services.background import BackgroundJob
 
 logger = logging.getLogger(__name__)
 
-# Bumped when the feature set or extractor changes: a TrackFeatures row on an
-# older version is stale, re-analyzed by _run and ignored by the discovery
-# scorer. 3 was the mp3 -> vorbis analysis-stream switch; 4 is the sample-rate
-# cap that stops hi-res sources failing their transcode entirely (see
-# jellyfin.py's _ANALYSIS_MAX_SAMPLE_RATE), measured to move vectors 2-6% --
-# too far for old and new to share one similarity space.
-FEATURE_VERSION = 4
+# Bumped when the feature set or extractor changes
+FEATURE_VERSION = 5
 
-# 22050 halves the STFT's cost versus 44100, discarding content above ~11kHz.
-# N_FFT/HOP are halved alongside it so the window (~46ms) and hop (~23ms) in
-# seconds are unchanged, keeping the tradeoff to frequency range alone.
+# 22050 is the default, above doesn't produce better results and is slower.
 SR = 22050
 N_FFT = 1024
 HOP = 512
 N_MFCC = 13
 
+WINDOW_BASE_S = 60.0 # Minimum analysis time
+WINDOW_FRAC = 0.20 # Minimum amount of a song to analyze (WINDOW_BASE_S * 1/WINDOW_FRAC), defualt is 5 minutes
+WINDOW_MARGIN = 1.5 # Run full analysis on songs less than WINDOW_MARGIN * WINDOW_BASE_S, otherwise use trim
+WINDOW_SEGMENT_TARGET_S = 10.0  # segment length to analyze
+WINDOW_SEGMENTS_MIN = 6 # 6 x 10 = 60s
+WINDOW_SEGMENTS_MAX = 20 # Cap to avoid ridiculous processing time/memory usage on super long tracks (which aren't going to give good data anyway)
+WINDOW_SILENCE_TOP_DB = 40  # trim leading/trailing silence before budgeting/slicing
+
 _DOWNLOAD_TIMEOUT = 30
-# Pause before the single retry of an empty transcode body (see _download_track).
-_EMPTY_BODY_RETRY_DELAY = 1.0
+
+_EMPTY_BODY_RETRY_DELAY = 1.0 # If a transcode fails, wait this long before retrying. Usually indicates a server that's too stressed.
 
 try:
     _POOL_CONTEXT = mp.get_context("fork")
@@ -64,23 +57,17 @@ except ValueError:
     _POOL_CONTEXT = mp
 
 # Above this many tracks, hubness stats are computed against a random sample
-# rather than the full library, trading slightly noisier median/MAD estimates
-# for an O(N^2) pass that stays cheap.
+# rather than the full library, slightly worse results but much faster.
 HUBNESS_FULL_PASS_LIMIT = 5000
 HUBNESS_SAMPLE_SIZE = 2000
-# Rows of the pairwise-distance matrix built at a time; bounds peak memory.
-_HUBNESS_BLOCK = 1000
+_HUBNESS_BLOCK = 1000 # Rows of matrix built at once, capping saves memory.
 
 # Scales MAD up to a std-equivalent under approximate normality (1/Phi^-1(0.75)).
-# Raw MAD runs ~32% low, which would make discovery._normal_sf read every
-# distance as more extreme than it is.
 _MAD_TO_STD = 1.4826
 
 
 def _feature_vector(features: dict) -> list:
-    """Concatenate a stored features dict into the vector the discovery scorer
-    standardizes and measures distance over, so hubness stats describe the same
-    distances that scorer sees."""
+    """Converts a features dict into a feature vector."""
     return features["mfcc_mean"] + features["mfcc_std"] + features["contrast_mean"]
 
 
@@ -89,28 +76,24 @@ _librosa = None
 
 def _ensure_librosa():
     """Import librosa with numba replaced by the pure-Python shim, patching the
-    functions whose numba bodies don't run as plain Python. Done once per process
-    and lazily, so importing this module never pays librosa's import cost."""
+    functions whose numba bodies don't run as plain Python."""
     global _librosa
     if _librosa is not None:
-        return _librosa
+        return _librosa # If librosa is already imported, return the cached module
 
     import sys
     import numpy as np
 
     from core import _numba_shim
-    # Must precede the first `import librosa` so librosa's `import numba` resolves
-    # to the shim. setdefault (not force) so a real numba, if somehow already
-    # imported, still wins - the overrides below make both paths identical anyway.
-    sys.modules.setdefault("numba", _numba_shim)
+    sys.modules.setdefault("numba", _numba_shim) # Must import first to trick librosa
 
     import librosa
-    import librosa.feature.rhythm  # tempo() moved out of librosa.beat in 0.10
+    import librosa.feature.rhythm
     import librosa.util.utils as _lru
 
-    # numpy replacements for the stencil-backed local-extrema finders, matching
-    # librosa's documented semantics (first element never an extremum; interior
-    # by strict/loose neighbour comparison; last element handled explicitly).
+    # ! CAUTION: This section of the code to bypass librosa features is mostly AI generated, proceed with caution.
+
+    # numpy replacements for the stencil-backed local-extrema finders
     def _localmax(x, *, axis=0):
         xi = x.swapaxes(-1, axis)
         m = np.empty_like(x, dtype=bool)
@@ -132,10 +115,8 @@ def _ensure_librosa():
     _lru.localmax = librosa.util.localmax = _localmax
     _lru.localmin = librosa.util.localmin = _localmin
 
-    # Vendored from librosa.beat.__beat_track_dp: numba coerces range(float) to int,
-    # plain Python rejects it. The outer DP recurrence stays sequential; the inner
-    # search window reads only already-computed cumscore entries, so it gathers into
-    # one numpy op. locs runs descending so argmax ties break as the original `>` did.
+    # Replacement for librosa.beat.__beat_track_dp and __beat_local_score, which are the only
+    #numba functions that are actually called by the code in this module.
     def _beat_track_dp(localscore, frames_per_beat, tightness):
         N = len(localscore)
         backlink = np.zeros(N, dtype=np.int32)
@@ -167,12 +148,6 @@ def _ensure_librosa():
                 first_beat = False
         return backlink, cumscore
 
-    # Vendored from librosa.beat.__beat_local_score. Its static-tempo branch (the
-    # only one finload reaches) is a same-mode convolution against a Gaussian
-    # window, kept as a manual loop upstream only because old numba lacked
-    # np.convolve. The loop's half-open k-range excludes boundary terms a plain
-    # zero-padded convolution includes, so the first/last K frames are recomputed
-    # with the original loop. The dynamic-tempo branch keeps that loop throughout.
     def _beat_local_score(onset_envelope, frames_per_beat):
         N = len(onset_envelope)
         localscore = np.zeros_like(onset_envelope)
@@ -212,29 +187,93 @@ def _ensure_librosa():
     _librosa = librosa
     return librosa
 
+# End AI-generated section.
+
+def _plan_segments(total_s: float):
+    """Returns a list of tuples (start_s, length_s) pairs
+    corresponding to the segments of audio that need analysis.
+    """
+    import numpy as np
+
+    if total_s <= WINDOW_BASE_S * WINDOW_MARGIN:
+        return None
+    budget_s = max(WINDOW_BASE_S, WINDOW_FRAC * total_s)
+    if budget_s >= total_s:
+        return None
+
+    n_segments = int(np.clip(round(budget_s / WINDOW_SEGMENT_TARGET_S),
+                             WINDOW_SEGMENTS_MIN, WINDOW_SEGMENTS_MAX))
+    seg_s = budget_s / n_segments
+    starts = np.linspace(0, total_s - seg_s, n_segments)
+    return [(float(s), seg_s) for s in starts]
+
+def _windowed_clip(librosa, np, y, sr: int):
+    """Trims silence and slices the audio into segments for analysis."""
+    if len(y) / sr <= WINDOW_BASE_S * WINDOW_MARGIN:
+        return y
+    y, _ = librosa.effects.trim(y, top_db=WINDOW_SILENCE_TOP_DB, hop_length=2048)
+    if y.size == 0:
+        return y
+    segments = _plan_segments(len(y) / sr)
+    if segments is None:
+        return y
+    parts = []
+    for start_s, seg_s in segments:
+        start = int(start_s * sr)
+        end = min(len(y), start + int(seg_s * sr))
+        parts.append(y[start:end])
+    return np.concatenate(parts)
+
+def _read_resampled(f, librosa, native_sr: int, frames: int = -1):
+    """Reads frames, downmixes to mono, and resamples to SR."""
+    raw = f.read(frames, dtype="float32", always_2d=True)
+    mono = raw.mean(axis=1) if raw.shape[1] > 1 else raw[:, 0]
+    return librosa.resample(mono, orig_sr=native_sr, target_sr=SR)
+
+def _decode_windowed(librosa, path: str):
+    """Seeks throughout the audio file instead of analyzing the whole track at once,
+    this is much more efficient for most tracks.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    with sf.SoundFile(path) as f:
+        native_sr = f.samplerate
+        segments = _plan_segments(f.duration)
+        if segments is None:
+            return _read_resampled(f, librosa, native_sr), SR
+        parts = []
+        for start_s, seg_s in segments:
+            f.seek(int(start_s * native_sr))
+            parts.append(_read_resampled(f, librosa, native_sr, int(seg_s * native_sr)))
+        return np.concatenate(parts), SR
 
 def _analyze(path: str) -> dict:
+    """Main analysis pipeline. Extracts features from audio using
+    librosa and returns them as a dictionary."""
     import numpy as np
     librosa = _ensure_librosa()
 
-    y, sr = librosa.load(path, sr=SR, mono=True)
+    try:
+        y, sr = _decode_windowed(librosa, path)
+    except Exception as exc:
+        # fall back to full decode.
+        logger.debug("Windowed decode failed for %s (%s), falling back to full decode", path, exc)
+        y, sr = librosa.load(path, sr=SR, mono=True)
+        if y.size == 0:
+            raise ValueError("empty audio")
+        y = _windowed_clip(librosa, np, y, sr)
     if y.size == 0:
         raise ValueError("empty audio")
 
-    # One STFT shared across beat tracking, MFCC and spectral contrast, which
-    # would otherwise each build their own. All four librosa calls take a
-    # caller-supplied S as-is, and melspectrogram's default mel-filter norm
-    # matches mfcc's own S=None branch, so the reuse is bit-identical.
+    # Calculate STFT once
     stft_mag = np.abs(librosa.stft(y, n_fft=N_FFT, hop_length=HOP))
-    mel_db = librosa.power_to_db(
-        librosa.feature.melspectrogram(S=stft_mag ** 2, sr=sr, n_fft=N_FFT, hop_length=HOP)
-    )
+    # Use the STFT magnitude for both the mel spectrogram and spectral contrast
+    mel_basis = librosa.filters.mel(sr=sr, n_fft=N_FFT)
+    mel_db = librosa.power_to_db(mel_basis @ (stft_mag ** 2))
 
     # aggregate=np.median matches beat_track's own non-default internal call.
     onset_env = librosa.onset.onset_strength(S=mel_db, sr=sr, hop_length=HOP, aggregate=np.median)
-    # beat_track() would also run its DP beat-placement pass for individual beat
-    # locations, which nothing here reads; tempo() returns the same scalar, which
-    # is estimated before that pass, without paying for it.
     tempo = librosa.feature.rhythm.tempo(onset_envelope=onset_env, sr=sr, hop_length=HOP)
 
     mfcc = librosa.feature.mfcc(S=mel_db, n_mfcc=N_MFCC)
@@ -246,19 +285,12 @@ def _analyze(path: str) -> dict:
         "contrast_mean": [float(x) for x in contrast.mean(axis=1)],
     }
 
+_cpu_fraction = 0.25 #% of CPU time each worker can use, limited to 1 core per worker.
 
-# Per-process, set once by _worker_init before any task runs (see there for
-# why this can't just be a plain argument to _throttled_analyze).
-_cpu_fraction = 0.25
-
-# Held for the worker's lifetime: dropping the handle restores the BLAS thread
-# limits _worker_init narrowed.
 _blas_limits = None
 
-
 def _throttled_analyze(path: str) -> dict:
-    """Runs ``_analyze`` then sleeps so busy-time / wall-time stays at or below
-    _cpu_fraction: at 0.25, a 2s analysis is followed by a 6s sleep."""
+    """Analyzes audio and sleeps to throttle CPU usage."""
     t0 = time.monotonic()
     result = _analyze(path)
     busy = time.monotonic() - t0
@@ -267,10 +299,8 @@ def _throttled_analyze(path: str) -> dict:
         time.sleep(idle)
     return result
 
-
 def _worker_init(cpu_fraction: float):
-    # Each pool worker is its own process, so this is set through the pool's
-    # initializer rather than read from a settings object the worker can't see.
+    """Pool worker initializer. Sets the process nice level and limits BLAS to one thread."""
     global _cpu_fraction
     _cpu_fraction = cpu_fraction
 
@@ -279,19 +309,10 @@ def _worker_init(cpu_fraction: float):
     except (AttributeError, OSError):
         pass
 
-    # numpy and scipy each vendor their own OpenBLAS, both defaulting to a thread
-    # pool sized to os.cpu_count(), so one librosa call can spin up 50-70 BLAS
-    # threads on top of the process-level parallelism the pool already provides.
-    # Single-threaded BLAS per worker removes that contention. Must run before
-    # numpy/scipy are first imported in this process, which _worker_init does --
-    # except in a fork whose parent had already initialized BLAS.
+    # By defualt, BLAS threads are unbounded and can saturate all cores, so limit them to 1.
     for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                  "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
         os.environ[_var] = "1"
-
-    # Those only bind at BLAS init, which a forked worker is already past whenever
-    # the parent has touched numpy (discovery's feature loader and
-    # compute_hubness_stats both do). threadpoolctl retunes an already-loaded BLAS.
     global _blas_limits
     try:
         import threadpoolctl
@@ -299,8 +320,8 @@ def _worker_init(cpu_fraction: float):
     except Exception:
         pass
 
-
 def _analyze_one(track_id_and_path: tuple[str, str]) -> tuple[str, dict | None, str | None]:
+    """Pool worker: analyze one track and return (track_id, features, error)."""
     track_id, path = track_id_and_path
     try:
         return track_id, _throttled_analyze(path), None
@@ -308,14 +329,11 @@ def _analyze_one(track_id_and_path: tuple[str, str]) -> tuple[str, dict | None, 
         # str(exc) is empty for some decode failures; fall back to the class name.
         return track_id, None, str(exc) or type(exc).__name__
 
-
 class _EmptyResponse(OSError):
     """A 200 with an empty body: the server declined to start a transcode."""
 
-
 def _fetch_to_temp(track: Track, url: str) -> str:
-    """Stream ``url`` to a temp file and return its path, failing loudly on an
-    empty body rather than handing librosa something it can't decode."""
+    """Stream audio from a URL to a temp file and return its path."""
     ext = os.path.splitext(url.split("?")[0])[1] or ".audio"
     dest = os.path.join(_temp_audio_dir(), f"{track.id}.{os.getpid()}-{threading.get_ident()}{ext}")
     with urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT) as response, open(dest, "wb") as fh:
@@ -324,51 +342,37 @@ def _fetch_to_temp(track: Track, url: str) -> str:
             if not chunk:
                 break
             fh.write(chunk)
-    if os.path.getsize(dest) == 0:
-        # Jellyfin answers a transcode it can't start with a 200 and an empty
-        # body; librosa would turn that into an opaque decode failure seconds
-        # later, so it fails here where the cause is still obvious.
+    if os.path.getsize(dest) == 0: # Empty request failed to start transcode
         os.remove(dest)
         raise _EmptyResponse("empty response from server")
     return dest
 
-
 def _download_track(track: Track, provider) -> str:
     """Fetch a remote track's analysis transcode to a temp file and return its
-    path. The caller owns the file and is responsible for removing it.
-
-    The stream URL carries the access token in its query string, so a token
-    revoked server-side (another client claiming the same device id, say) turns
-    every download in the pass into a 401 with nothing to recover it -- the
-    provider's own 401-retry only covers its JSON endpoints. Re-authenticating
-    and rebuilding the URL once is what keeps a stale token from failing a whole
-    library's analysis. An empty body gets the same single retry: it means the
-    server declined to start a transcode, which is usually transient.
-    """
+    path. The caller owns the file and is responsible for removing it."""
     for attempt in (0, 1):
+        token_at_request = provider.access_token
         url = provider.get_analysis_stream_url(track.id)
         try:
             return _fetch_to_temp(track, url)
         except urllib.error.HTTPError as exc:
-            if exc.code != 401 or attempt or not provider.reauthenticate():
+            if exc.code != 401 or attempt or not provider.reauthenticate(token_at_request):
                 raise
             logger.info("Re-authenticated after a 401 fetching %s", track.title)
         except _EmptyResponse:
             if attempt:
                 raise
             time.sleep(_EMPTY_BODY_RETRY_DELAY)
-    raise _EmptyResponse("empty response from server")  # unreachable; the loop returns or raises
-
+    raise _EmptyResponse("empty response from server")  # unreachable
 
 def _temp_audio_dir() -> str:
+    """Returns a temp directory for downloaded audio, creating it if needed."""
     path = os.path.join(str(get_data_dir()), "tmp_audio_analysis")
     os.makedirs(path, exist_ok=True)
     return path
 
-
 def _purge_temp_audio() -> None:
-    """Clear transcodes a previous run left behind: nothing survives a run by
-    design, so anything here is from a crash or a hard kill."""
+    """Removes all temporary audio files."""
     directory = _temp_audio_dir()
     for name in os.listdir(directory):
         try:
@@ -376,16 +380,14 @@ def _purge_temp_audio() -> None:
         except OSError:
             pass
 
-
-ON_DEMAND_WORKERS = 4  # threads ensure_features analyzes across
+ON_DEMAND_WORKERS = 4  # threads to use for foreground audio analysis in ensure_features
 ON_DEMAND_LIMIT = 6    # most tracks one ensure_features call will analyze
-# Serializes foreground analysis so two radio starts in a row don't race each
-# other onto the same tracks; the second finds the first's rows already written.
 _on_demand_lock = threading.Lock()
 
+DOWNLOAD_CONCURRENCY = 1 # Entirely bandwidth-limited, so more workers doesn't speed things up.
 
 def tracks_with_features(track_ids) -> set[str]:
-    """Which of ``track_ids`` already have current-version cached features."""
+    """Returns the IDs of tracks that have current-version cached features."""
     ids = list(track_ids)
     if not ids:
         return set()
@@ -394,7 +396,6 @@ def tracks_with_features(track_ids) -> set[str]:
                    & (TrackFeatures.feature_version == FEATURE_VERSION))
             .tuples())
     return {row[0] for row in rows}
-
 
 def _analyze_track(track: Track, provider) -> tuple[str, dict | None]:
     """Analyze one track, downloading it first if it isn't local."""
@@ -414,17 +415,9 @@ def _analyze_track(track: Track, provider) -> tuple[str, dict | None]:
             except OSError:
                 pass
 
-
 def ensure_features(track_ids, db_manager, provider) -> set[str]:
-    """Analyze up to ON_DEMAND_LIMIT of ``track_ids`` that have no current-version
-    features, and return the ids that have them afterwards.
-
-    Radio needs features for the track it is seeding from, which the background
-    pass may not have reached yet on a fresh install. This runs in the caller's
-    thread at full speed rather than through the throttled pool -- the user is
-    waiting on it -- and analyzes at most a handful of tracks, so a radio start
-    costs seconds rather than failing outright.
-    """
+    """Analyzes tracks immediately that don't have current-version features, bypassing the background job.
+    Returns the set of track IDs that now have features, including those that already did."""
     ids = list(dict.fromkeys(track_ids))
     if not ids:
         return set()
@@ -447,11 +440,8 @@ def ensure_features(track_ids, db_manager, provider) -> set[str]:
 
 
 def compute_hubness_stats(db_manager) -> int:
-    """Cache each track's median/MAD distance to the rest of the library, which
-    discovery._mutual_proximity uses to spot "hub" tracks sitting close to
-    everything regardless of genre. Median/MAD rather than mean/std: the real
-    distribution is right-skewed enough that mean/std under-corrects hubs.
-    Vectors are standardized exactly as discovery._bulk_load_features does."""
+    """Compute hubness statistics for the current library. Prevents tracks from being nearest_neighbor
+    to too many other tracks, which otherwise makes them over-represented."""
     import numpy as np
 
     rows = [r for r in TrackFeatures.select(TrackFeatures.track, TrackFeatures.features)
@@ -465,7 +455,6 @@ def compute_hubness_stats(db_manager) -> int:
     std[std < 1e-12] = 1.0
     vectors = (vectors - vectors.mean(axis=0)) / std
 
-    # self_col[i] is track i's own column, or -1 when sampling left it out.
     self_col = np.full(len(vectors), -1)
     if len(rows) > HUBNESS_FULL_PASS_LIMIT:
         sample_idx = np.random.choice(len(rows), size=HUBNESS_SAMPLE_SIZE, replace=False)
@@ -475,8 +464,6 @@ def compute_hubness_stats(db_manager) -> int:
         sample_vectors = vectors
         self_col[:] = np.arange(len(vectors))
 
-    # ||a-b||^2 = ||a||^2 + ||b||^2 - 2 a.b, avoiding an O(N^2) Python loop, and
-    # blocked over rows so the full matrix never materializes.
     b_sq = np.sum(sample_vectors ** 2, axis=1)
     stats = []
     for start in range(0, len(vectors), _HUBNESS_BLOCK):
@@ -484,9 +471,6 @@ def compute_hubness_stats(db_manager) -> int:
         a_sq = np.sum(block ** 2, axis=1, keepdims=True)
         dist = np.sqrt(np.maximum(a_sq + b_sq - 2 * (block @ sample_vectors.T), 0.0))
         for offset, row_dists in enumerate(dist):
-            # Dropped by index, not by "distance near zero": the expansion above
-            # only cancels to ~1e-7, so no threshold separates a self-pair from a
-            # genuine duplicate reliably.
             column = self_col[start + offset]
             if column >= 0:
                 row_dists = np.delete(row_dists, column)
@@ -499,15 +483,8 @@ def compute_hubness_stats(db_manager) -> int:
 
     db_manager.save_hubness_stats(stats)
     return len(stats)
-
-
 class AudioFeatureManager(BackgroundJob):
-    """Extracts and caches librosa DSP features for every track that lacks
-    current-version features. A completed sync starts this like any other
-    follow-up job (state.py's ``sync.follow_up_jobs``), as
-    ``job.start(force=False)`` with no provider argument -- hence the provider
-    getter taken at construction, which also survives ``switch_source()``."""
-
+    """Extracts and caches librosa DSP features for every track that lacks current-version features."""
     supports_force = True
 
     def __init__(self, settings, db_manager, provider_getter):
@@ -515,8 +492,7 @@ class AudioFeatureManager(BackgroundJob):
         self._settings = settings
         self.db = db_manager
         self._get_provider = provider_getter
-        # Set when analysis_worker_count/analysis_worker_usage change while a
-        # run is in progress -- see _on_setting_changed and _run.
+        # Set when settings are changed mid-pass, not super reliable
         self._restart_requested = threading.Event()
         settings.add_listener(self._on_setting_changed)
 
@@ -530,23 +506,16 @@ class AudioFeatureManager(BackgroundJob):
             self._restart_requested.set()
 
     def ensure_features(self, track_ids) -> set[str]:
-        """Foreground analysis for tracks radio needs right now, bound to this
-        manager's db and provider (see the module-level ensure_features). With
-        radio disabled it only reports what is already cached: the user turned
-        analysis off, so it isn't run behind their back."""
+        """Foreground analysis for tracks radio needs right now."""
         if not self._settings.get("enable_radio"):
             return tracks_with_features(track_ids)
         return ensure_features(track_ids, self.db, self._get_provider())
-
-    # ------------------------------------------------------------------
-    # Background worker
-    # ------------------------------------------------------------------
 
     def _run(self, force: bool = False) -> None:
         provider = self._get_provider()
         self._restart_requested.clear()
         _purge_temp_audio()
-        # Only the first pass honors force=True; a restart just keeps going.
+        # Only the first pass honors force=True
         pass_force = force
         analyzed = failed = 0
 
@@ -567,47 +536,36 @@ class AudioFeatureManager(BackgroundJob):
             pass_force = False
 
         if not analyzed:
-            self._emit(status="complete", message="No new tracks to analyze")
+            self._emit(status="complete", message="All tracks already analyzed!")
             return
 
-        # Only when something new was written: the stats are a function of the
-        # whole feature set, so an empty pass recomputes an identical answer.
         self._emit(message="Computing hubness stats...")
         compute_hubness_stats(self.db)
 
         self._emit(status="complete",
                    message=f"Analyzed {analyzed} tracks"
-                           + (f", {failed} failed" if failed else ""))
+                           + (f", {failed} failed." if failed else "."))
 
     def _pending_tracks(self, force: bool) -> list[Track]:
-        """Tracks needing analysis. Only id/provider/file_path/title are read
-        downstream, so the query stays narrow."""
+        """Returns a list of tracks that need analysis. If force=True, returns all tracks."""
         query = Track.select(Track.id, Track.provider, Track.file_path, Track.title)
         if not force:
-            # Skip only tracks whose cached features are the current version;
-            # a FEATURE_VERSION bump re-analyzes everything else.
+            # Skip only tracks whose cached features are the current version
             current = (TrackFeatures.select(TrackFeatures.track)
                        .where(TrackFeatures.feature_version == FEATURE_VERSION))
             query = query.where(Track.id.not_in(current))
         return list(query)
 
     def _analyze_batch(self, tracks: list[Track], provider) -> tuple[int, int, bool]:
-        """Runs one pool pass over ``tracks``, returning (processed, errors,
-        restarted). ``restarted`` means a worker setting changed mid-pass and the
-        caller should re-query and call again; rows already written stay written,
-        so stopping early loses no work."""
+        """Runs one pool pass over the list of tracks."""
         n_workers = self._configured_worker_count()
         cpu_fraction = self._configured_cpu_fraction()
         temp_paths: dict[str, str] = {}
         processed = 0
         errors = 0
         restarted = False
-
-        # Tells _resolve_paths to stop feeding the pool. Every exit from the
-        # results loop must set this before the `with` block calls terminate(),
-        # hence the inner finally: terminate() busy-waits for the task-handler
-        # thread, which is the thread parked inside _resolve_paths.
         stop = threading.Event()
+
         try:
             with _POOL_CONTEXT.Pool(n_workers, initializer=_worker_init,
                                     initargs=(cpu_fraction,)) as pool:
@@ -617,17 +575,14 @@ class AudioFeatureManager(BackgroundJob):
                         self._resolve_paths(tracks, provider, temp_paths, stop),
                     ):
                         if not self._settings.get("enable_radio"):
-                            # Turned off mid-run; stop rather than keep working
-                            # on a disabled feature.
                             self._emit(status="idle",
-                                       message="Stopped - disabled in settings")
+                                       message="Stopped. Disabled in settings.")
                             return processed, errors, False
                         if self._restart_requested.is_set():
                             self._restart_requested.clear()
                             restarted = True
                             break
-                        # Pausing here stops new analysis and DB writes; the
-                        # downloads already queued in _resolve_paths still finish.
+                        # Pausing here stops new analysis and DB writes
                         self.wait_if_paused()
                         temp_path = temp_paths.pop(track_id, None)
                         if temp_path:
@@ -635,21 +590,18 @@ class AudioFeatureManager(BackgroundJob):
                                 os.remove(temp_path)
                             except OSError:
                                 pass
-
                         processed += 1
                         if error:
                             errors += 1
                         else:
                             self.db.save_track_features(track_id, **features)
-
                         self._emit(processed=processed,
                                    message=f"Analyzing audio: {processed}/{len(tracks)}"
                                            + (f" ({errors} failed)" if errors else ""))
                 finally:
                     stop.set()
         finally:
-            # Anything downloaded but never analyzed would otherwise be left
-            # behind in the temp dir.
+            # Clean up leftover temp files on sudden restart or error
             for leftover in temp_paths.values():
                 try:
                     os.remove(leftover)
@@ -664,30 +616,17 @@ class AudioFeatureManager(BackgroundJob):
         return min(max(1, configured), os.cpu_count() or 1)
 
     def _configured_cpu_fraction(self) -> float:
-        # Percent (1-100) in settings -> fraction of a core per worker.
         pct = float(self._settings.get("analysis_worker_usage") or 25)
         return min(max(pct, 1.0), 100.0) / 100.0
 
     def _wait_while_paused(self, stop: threading.Event) -> None:
-        """Like wait_if_paused, but also returns once ``stop`` is set -- this
-        runs on the pool's task-handler thread, which teardown waits on."""
+        """Like wait_if_paused, but also returns once stop is set."""
         while not self._pause_event.is_set() and not stop.is_set():
             self._pause_event.wait(0.5)
 
     def _resolve_paths(self, tracks: list[Track], provider, temp_paths: dict[str, str],
                        stop: threading.Event):
-        """Yields (track_id, local_path) for the pool. Local tracks already have a
-        path; a remote one is transcoded down and fetched here, one at a time.
-
-        Serial on purpose: the analysis pool is duty-cycle throttled, so it
-        consumes tracks slowly enough that one download keeps ahead of it, and
-        each concurrent download would be another transcode asked of the server.
-        It also bounds the temp directory, since the Pool's task-handler thread
-        drains this generator eagerly rather than in step with the workers.
-
-        That thread is also what terminate() busy-waits on, so every step checks
-        ``stop`` -- an abandoned pass has to be able to tear down.
-        """
+        """Yields (track_id, local_path) for the pool."""
         local, remote = [], []
         for track in tracks:
             (local if track.provider == "local" and track.file_path else remote).append(track)
@@ -698,21 +637,45 @@ class AudioFeatureManager(BackgroundJob):
                 return
             yield track.id, track.file_path
 
-        for track in remote:
-            # Stop feeding while a sync holds this job paused, so the pause halts
-            # downloads and CPU work, not just the DB writes.
+        if not remote:
+            return
+        yield from self._resolve_remote(remote, provider, temp_paths, stop, DOWNLOAD_CONCURRENCY)
+
+    def _resolve_remote(self, remote: list[Track], provider, temp_paths: dict[str, str],
+                        stop: threading.Event, concurrency: int):
+        """Downloads a remote track and yields its ID and local path. Supports concurrency and pausing."""
+        it = iter(remote)
+
+        def submit_next(pool):
+            # Stop feeding while a sync holds this job paused
             self._wait_while_paused(stop)
             if stop.is_set():
-                return
-            try:
-                local_path = _download_track(track, provider)
-            except Exception as exc:
-                logger.warning("Skipping %s: download failed (%s)", track.title, exc)
-                continue
-            # Recorded before the stop check so an abandoned pass still cleans
-            # this file up (see _analyze_batch's finally).
-            temp_paths[track.id] = local_path
-            if stop.is_set():
-                return
-            yield track.id, local_path
+                return None
+            track = next(it, None)
+            return (pool.submit(_download_track, track, provider), track) if track else None
 
+        with cf.ThreadPoolExecutor(max_workers=concurrency) as pool:
+            window = deque()
+            for _ in range(concurrency):
+                item = submit_next(pool)
+                if item is None:
+                    break
+                window.append(item)
+
+            while window:
+                future, track = window.popleft()
+                try:
+                    local_path = future.result()
+                except Exception as exc:
+                    logger.warning("Skipping %s: download failed (%s)", track.title, exc)
+                else:
+                    # Recorded before the stop check so an abandoned pass still cleans this file up
+                    temp_paths[track.id] = local_path
+                    if stop.is_set():
+                        return
+                    yield track.id, local_path
+                if stop.is_set():
+                    return
+                item = submit_next(pool)
+                if item is not None:
+                    window.append(item)

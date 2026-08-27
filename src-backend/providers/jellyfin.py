@@ -1,8 +1,4 @@
-"""Jellyfin media provider.
-
-All Jellyfin-specific behaviour (the Emby/Jellyfin REST API, its metadata
-shapes, auth header, stream-URL scheme) is contained here.
-"""
+"""Jellyfin media provider. Contains all Jellyfin-specific behavior."""
 import datetime
 import json
 import logging
@@ -22,44 +18,28 @@ from .lyrics import NO_LYRICS, fetch_lrclib
 
 logger = logging.getLogger(__name__)
 
-# Default timeout (seconds).
 REQUEST_TIMEOUT = 120
-
-# Auth happens on the startup path, so it must not be able to hang the app for
-# REQUEST_TIMEOUT when the server is unreachable.
 AUTH_TIMEOUT = 15
-
-# How many ID chunks to request from Jellyfin in parallel during sync.
-SYNC_FETCH_WORKERS = 8
-
-# Items per page when sweeping /Items for all/changed ids (see
-# _iter_items_pages) -- keeps each response's build+transfer time roughly
-# constant regardless of total library size.
-_ITEMS_PAGE_SIZE = 2000
+SYNC_FETCH_WORKERS = 8 # Used for fetching ID chunks during sync.
+_ITEMS_PAGE_SIZE = 2000 # Items per page when sweeping /Items for all/changed IDs.
 
 
 def _env_or_setting(env_name: str, settings, settings_key: str) -> str:
-    """Resolve a value: env var wins (handy for dev/.env), else the saved setting."""
+    """Resolve a value: env var wins, else the saved setting."""
     value = os.getenv(env_name, "").strip()
     if value:
         return value
     return (settings.get(settings_key) or "").strip()
 
-
 def _device_auth_header() -> str:
-    """The X-Emby-Authorization header Jellyfin requires on the (otherwise
-    unauthenticated) AuthenticateByName call, identifying this client/device.
-    The device id is per-install (see config.get_device_id): a shared one makes
-    every sign-in revoke the other install's token."""
+    """Creates a per-device auth header to use for all Jellyfin requests."""
     return (
         f'MediaBrowser Client="{APP_NAME}", Device="Desktop", '
         f'DeviceId="{get_device_id()}", Version="{APP_VERSION}"'
     )
 
-
 def _authenticate_by_name(server_url: str, username: str, password: str) -> dict:
-    """Exchanges a username/password for an access token + user id, the way
-    Jellyfin's own apps do. Raises urllib.error.HTTPError/URLError on failure."""
+    """Exchanges a username/password for an access token + user id."""
     body = json.dumps({"Username": username, "Pw": password}).encode("utf-8")
     req = urllib.request.Request(
         f"{server_url}/Users/AuthenticateByName",
@@ -74,12 +54,9 @@ def _authenticate_by_name(server_url: str, username: str, password: str) -> dict
     with urllib.request.urlopen(req, timeout=AUTH_TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
 
-
 def test_connection(server_url: str, username: str, password: str) -> dict:
-    """Lightweight reachability + auth check used by onboarding, for candidate
-    values that haven't been saved to settings yet."""
+    """Lightweight reachability + auth check used by onboarding."""
     server_url = server_url.rstrip("/")
-
     try:
         req = urllib.request.Request(
             f"{server_url}/System/Info/Public",
@@ -91,7 +68,7 @@ def test_connection(server_url: str, username: str, password: str) -> dict:
     except urllib.error.URLError:
         return {"ok": False, "message": "Could not reach server at this URL"}
     except Exception:
-        return {"ok": False, "message": "Could not reach server at this URL"}
+        return {"ok": False, "message": "Unexpected error contacting server"}
 
     try:
         data = _authenticate_by_name(server_url, username, password)
@@ -109,16 +86,11 @@ def test_connection(server_url: str, username: str, password: str) -> dict:
     display_name = data.get("User", {}).get("Name", username)
     return {"ok": True, "message": f"Connected as {display_name}"}
 
-
 class JellyfinProvider(MediaProvider):
     SETTINGS_KEYS = ("jellyfin_url", "jellyfin_username", "jellyfin_password")
 
     def __init__(self, settings) -> None:
         super().__init__()
-        # item id -> owning library id, populated by the per-library fan-out
-        # in _fetch_ids_scoped and consulted by _yield_items. Rebuilt fresh at
-        # the start of every fetch_all_ids (see there), so it never carries
-        # ids across syncs.
         self._id_to_library: Dict[str, str] = {}
         self._auth_lock = threading.Lock()
         self.configure(settings)
@@ -132,12 +104,13 @@ class JellyfinProvider(MediaProvider):
         self.user_id = ""
         self._authenticate()
 
-    def _authenticate(self) -> bool:
-        """(Re-)exchange the saved credentials for a token. Serialized so a
-        burst of concurrent 401s triggers one re-auth, not one per caller."""
+    def _authenticate(self, stale_token: str | None = None) -> bool:
+        """Convert saved credentials into an access token."""
         if not (self.server_url and self.username and self.password):
             return False
         with self._auth_lock:
+            if stale_token is not None and self.access_token != stale_token:
+                return bool(self.access_token and self.user_id)
             try:
                 data = _authenticate_by_name(self.server_url, self.username, self.password)
             except Exception as e:
@@ -147,8 +120,8 @@ class JellyfinProvider(MediaProvider):
             self.user_id = data.get("User", {}).get("Id", "")
             return bool(self.access_token and self.user_id)
 
-    def reauthenticate(self) -> bool:
-        return self._authenticate()
+    def reauthenticate(self, stale_token: str | None = None) -> bool:
+        return self._authenticate(stale_token)
 
     def is_configured(self) -> bool:
         return bool(self.server_url and self.access_token and self.user_id)
@@ -174,8 +147,7 @@ class JellyfinProvider(MediaProvider):
 
     def _post_no_body(self, path: str, query: Optional[Dict[str, Any]] = None) -> bool:
         """POST with an empty body (Content-Length: 0) and ignore the response
-        payload - for fire-and-forget endpoints like PlayedItems that may reply
-        200 with a body or 204 with none."""
+        payload for fire-and-forget endpoints."""
         url = f"{self.server_url}{path}"
         if query:
             url += "?" + urllib.parse.urlencode(query)
@@ -188,34 +160,26 @@ class JellyfinProvider(MediaProvider):
             return response.status in (200, 204)
 
     def report_play(self, track_id: str) -> None:
-        """Mark a track played on the Jellyfin server: increments its play
-        count and sets LastPlayedDate, which then syncs to other clients."""
+        """Mark a track played on the Jellyfin server."""
         if not self.is_configured():
             return
         try:
             self._post_no_body(f"/Users/{self.user_id}/PlayedItems/{track_id}")
         except Exception as e:
-            logger.warning("Failed to report play to Jellyfin: %s", e)
+            logger.warning("Failed to report play to Jellyfin: %s", str(e))
 
     def _parse_jellyfin_date(self, raw: Optional[str]) -> Optional[datetime.datetime]:
-        """Jellyfin's DateCreated is the item's real "added to library" time
-        - a genuine signal for the home page's Recently Added row, unlike a
-        migration backfill. Defensive: a missing/malformed value just means
-        the caller falls back to "now" at insert time, not a sync failure."""
+        """Poll Jellyfin's DateCreated to use for "Recently Added" section."""
         if not raw:
             return None
         try:
             return datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
+        except (ValueError, TypeError):
             return None
 
     def _yield_items(self, items) -> Iterator[dict]:
+        """Yield normalized track dictionaries from Jellyfin items."""
         for track in items:
-            # Extract artist names and Jellyfin UUIDs. AlbumArtists is the
-            # album-level credit (e.g. "Various Artists" for a compilation) -
-            # it must take priority over ArtistItems, which is this specific
-            # track's own performer(s) and varies from song to song within the
-            # same album.
             album_artists = track.get("AlbumArtists") or []
             if album_artists:
                 album_artist_name = album_artists[0].get("Name", "Unknown Artist")
@@ -228,7 +192,7 @@ class JellyfinProvider(MediaProvider):
                     track.get("ArtistItems", [{}])[0].get("Id")
                     if track.get("ArtistItems") else None
                 )
-            # Fall back to a slug if Jellyfin didn't return a UUID (unusual).
+            # Fall back to a slug if Jellyfin didn't return a UUID (odd).
             album_artist_id = jellyfin_album_artist_id or album_artist_name.lower().replace(" ", "_")
             track_artist_name = album_artist_name
             track_artist_id = album_artist_id
@@ -239,9 +203,7 @@ class JellyfinProvider(MediaProvider):
                     jellyfin_track_artist_id = track["ArtistItems"][0].get("Id")
                     track_artist_id = jellyfin_track_artist_id or track_artist_name.lower().replace(" ", "_")
 
-            # MusicBrainz IDs, when Jellyfin's own metadata scraper resolved
-            # them - lets genre enrichment skip audio fingerprinting entirely
-            # for libraries that are already MusicBrainz-tagged.
+            # Collect MusicBrainz IDs from Jellyfin to use for metadata enrichment.
             provider_ids = track.get("ProviderIds") or {}
 
             added_at = self._parse_jellyfin_date(track.get("DateCreated"))
@@ -288,23 +250,12 @@ class JellyfinProvider(MediaProvider):
         ]
 
     def _selected_library_ids(self) -> List[str]:
-        # A pending selection (still being backfilled -- see
-        # routers/settings.py's select endpoint) is what sync should fetch
-        # against; browsing keeps using the applied one until that succeeds.
         pending = self._settings.get("jellyfin_library_ids_pending")
         ids = pending if pending is not None else self._settings.get("jellyfin_library_ids")
         return [lib_id for lib_id in (ids or []) if lib_id]
 
     def _iter_items_pages(self, base_query: Dict[str, Any]) -> Iterator[dict]:
-        """Yields every item dict matching ``base_query``, paginating via
-        StartIndex/Limit so a single /Items response never has to carry the
-        whole result set. A library of tens of thousands of tracks returned
-        in one unpaginated response can take long enough to build and
-        transfer that it trips a reverse-proxy timeout well before
-        REQUEST_TIMEOUT is ever reached, even against a healthy server and
-        connection -- pagination keeps every individual request small and
-        fast regardless of library size.
-        """
+        """Yields item dictionaries matching base_query, paginating via StartIndex/Limit."""
         start = 0
         while True:
             query = {**base_query, "StartIndex": start, "Limit": _ITEMS_PAGE_SIZE}
@@ -316,13 +267,7 @@ class JellyfinProvider(MediaProvider):
             start += _ITEMS_PAGE_SIZE
 
     def _fetch_ids_scoped(self, base_query: Dict[str, Any]) -> Set[str]:
-        """Runs ``base_query`` against /Items, scoped to each selected library
-        in turn (``ParentId`` is an ancestor scope under ``Recursive``) and
-        unions the results, recording each id's owning library in
-        ``self._id_to_library`` along the way. With no library selection
-        configured, falls back to an unscoped (but still paginated) sweep -
-        today's behavior, just no longer in one giant response.
-        """
+        """Returns a set of item IDs matching base_query, scoped to selected libraries."""
         selected = self._selected_library_ids()
         if not selected:
             return {item["Id"] for item in self._iter_items_pages(base_query)}
@@ -336,7 +281,7 @@ class JellyfinProvider(MediaProvider):
                 self._id_to_library[item_id] = library_id
         return ids
 
-    # Shared by the all-ids and changed-ids sweeps; both want ids only.
+    # Shared by the all-ids and changed-ids sweeps
     _ID_SWEEP_QUERY = {
         "Recursive": "true",
         "IncludeItemTypes": "Audio",
@@ -351,11 +296,7 @@ class JellyfinProvider(MediaProvider):
         return self._fetch_ids_scoped(dict(self._ID_SWEEP_QUERY))
 
     def fetch_changed_ids(self, since: str) -> Set[str]:
-        """IDs of tracks Jellyfin has saved (added or edited) since ``since``.
-
-        Jellyfin bumps DateLastSaved on any edit, not just on creation, so this
-        catches in-place changes a plain ID diff would miss.
-        """
+        """IDs of tracks Jellyfin has saved (added or edited) since a given date."""
         # Reset here too, or the map grows across every incremental sync.
         self._id_to_library = {}
         return self._fetch_ids_scoped({**self._ID_SWEEP_QUERY, "MinDateLastSaved": since})
@@ -364,8 +305,6 @@ class JellyfinProvider(MediaProvider):
         query = {
             "IncludeItemTypes": "Audio",
             "Recursive": "true",
-            # Genres must be requested explicitly; Jellyfin omits it from the
-            # default field set, and genre enrichment has no other source for it.
             "Fields": "Genres,ProductionYear,ArtistItems,AlbumArtists,ProviderIds,DateCreated",
             "Ids": ",".join(chunk)
         }
@@ -378,10 +317,7 @@ class JellyfinProvider(MediaProvider):
 
         chunks = [item_ids[i:i + chunk_size] for i in range(0, len(item_ids), chunk_size)]
 
-        # Failures are deferred rather than raised inline, so a chunk that dies
-        # near the start doesn't discard every item fetched after it -- the
-        # caller writes what did arrive, then this raises and leaves the sync
-        # checkpoint unadvanced so the next pass re-covers the same window.
+        # Failures are deferred rather than raised inline
         with ThreadPoolExecutor(max_workers=SYNC_FETCH_WORKERS) as executor:
             failed = yield from self._drain(executor, chunks)
             if failed:
@@ -391,7 +327,7 @@ class JellyfinProvider(MediaProvider):
             raise RuntimeError(f"{len(failed)} chunk(s) failed to fetch after a retry")
 
     def _drain(self, executor, chunks: List[List[str]]) -> Iterator[dict]:
-        """Yield every item from ``chunks``, returning the chunks that failed."""
+        """Yield every item from chunks, returning the chunks that failed."""
         futures = {executor.submit(self._fetch_chunk, chunk): chunk for chunk in chunks}
         failed = []
         for future in as_completed(futures):
@@ -403,11 +339,7 @@ class JellyfinProvider(MediaProvider):
         return failed
 
     def download_image_to_cache(self, item_id: str, size_px: int = 0) -> bool:
-        """
-        Downloads a specific pixel-width of an image to the local cache.
-        If size_px is 0, downloads the original resolution. Jellyfin already
-        serves the image pre-sized, no resize needed.
-        """
+        """Downloads an image for the given item to the local cache."""
         url = f"{self.server_url}/Items/{item_id}/Images/Primary"
         if size_px > 0:
             url += f"?maxWidth={size_px}"
@@ -423,13 +355,7 @@ class JellyfinProvider(MediaProvider):
             return False
 
     def _transcode_preference(self) -> Optional[tuple[str, int]]:
-        """The user's configured (codec, bitrate) for transcoded playback, or
-        None if playback should direct-play the original file - either because
-        the master "enable transcoding" toggle is off, or the bitrate setting
-        is missing/invalid. Verified live against /Audio/{id}/universal, which
-        - unlike the legacy /Audio/{id}/stream endpoint - actually honors
-        audioBitRate and maxAudioChannels instead of silently ignoring them.
-        """
+        """Pulls transcode preferences from Settings."""
         if not self._settings.get("enable_transcoding"):
             return None
         raw_bitrate = (self._settings.get("transcode_bitrate") or "").strip()
@@ -438,31 +364,13 @@ class JellyfinProvider(MediaProvider):
         codec = (self._settings.get("transcode_format") or "mp3").strip() or "mp3"
         return codec, int(raw_bitrate)
 
-    # Containers offered for direct play when no transcode preference is set -
-    # covers everything a music library realistically stores; mpv plays all of
-    # them natively, so there's no reason to ever transcode down to this list.
     _DIRECT_PLAY_CONTAINERS = "flac,mp3,ogg,opus,m4a,aac,wav,alac,wma,ape,wv"
 
     def _universal_url(self, track_id: str, *, audio_codec: Optional[str] = None,
                         audio_bitrate: Optional[int] = None, container: Optional[str] = None,
                         max_channels: Optional[int] = None, max_sample_rate: Optional[int] = None,
                         start_seconds: float = 0.0) -> str:
-        """A /universal stream URL - the same endpoint Jellyfin's own apps use,
-        and the only audio endpoint that actually honors audioBitRate/
-        maxAudioChannels on this API (the legacy /Audio/{id}/stream endpoint
-        accepts those params and silently ignores both, always returning its
-        own fixed default). It direct-plays with proper Range support when no
-        codec/bitrate is given and the source container is in ``container``,
-        so it also replaces the old static=true direct-play endpoint.
-
-        ``container`` defaults to ``audio_codec`` since that's right for mp3
-        and the transcode-preference codecs -- raw-stream formats where the
-        container name is just the codec name. Vorbis (see
-        get_analysis_stream_url) needs it passed explicitly ("ogg"): unlike
-        those, it's only ever delivered wrapped in a container, and
-        Jellyfin's codec name for it ("vorbis") isn't also a valid container
-        name.
-        """
+        """Returns the universal stream URL for the given track. """
         params = {
             "deviceId": get_device_id(),
             "userId": self.user_id,
@@ -486,8 +394,7 @@ class JellyfinProvider(MediaProvider):
         return f"{self.server_url}/Audio/{track_id}/universal?" + urllib.parse.urlencode(params)
 
     def get_stream_url(self, track_id: str) -> str:
-        """Direct-play URL, or a transcoded /universal URL if the user has a
-        transcode bitrate configured in settings."""
+        """Returns the correct stream URL based on a user's settings."""
         preference = self._transcode_preference()
         if not preference:
             return self._universal_url(track_id)
@@ -495,16 +402,7 @@ class JellyfinProvider(MediaProvider):
         return self._universal_url(track_id, audio_codec=codec, audio_bitrate=bitrate)
 
     def get_seeked_stream(self, track_id: str, start_seconds: float) -> tuple[str, float]:
-        """A stream that already begins ``start_seconds`` into the track.
-
-        Jellyfin only honours ``startTimeTicks`` on the transcoding path, so a
-        nonzero offset always goes through /universal with an explicit codec -
-        using the user's transcode preference if set, otherwise a reasonable
-        default - even when direct play would otherwise be used. In return the
-        server delivers audio that starts at the offset, so the player has
-        nothing to seek and no leading bytes to fetch and throw away. A zero
-        offset needs none of this and takes the plain direct stream.
-        """
+        """Returns an audio stream URL starting at start_seconds. """
         if start_seconds <= 0:
             return self.get_stream_url(track_id), 0.0
         codec, bitrate = self._transcode_preference() or ("mp3", 192000)
@@ -512,28 +410,15 @@ class JellyfinProvider(MediaProvider):
             track_id, audio_codec=codec, audio_bitrate=bitrate, start_seconds=start_seconds
         ), 0.0
 
-    # libvorbis encodes at up to 48kHz and Jellyfin won't resample into it on its
-    # own, so a hi-res source (96/176.4kHz FLAC) fails the transcode and comes
-    # back as an empty 200. Asking for a rate cap makes the server resample first.
-    # Passing the parameter at all moves Jellyfin onto a different transcode path,
-    # which shifts every track's features by a few percent whatever value it
-    # carries -- hence FEATURE_VERSION 4.
-    _ANALYSIS_MAX_SAMPLE_RATE = 48000
-
     def get_analysis_stream_url(self, track_id: str) -> str:
-        """A small transcoded mono stream for offline feature extraction.
-        Vorbis was chosen since it still pulls correct enough features at 32kbps mono,
-        and opus decoding is significantly slower.
-        """
-        return self._universal_url(
-            track_id, audio_codec="vorbis", audio_bitrate=32000, container="ogg", max_channels=1,
-            max_sample_rate=self._ANALYSIS_MAX_SAMPLE_RATE)
+        """Returns the stream URL for audio analysis.
+        This seems redundant but it's because I used to support transcoding,
+        but it seems like it's slower than direct even on lossless now, and
+        really stresses the Jellyfin server."""
+        return self._universal_url(track_id)
 
     def _server_lyrics(self, track_id: str, synced_enabled: bool) -> tuple[dict | None, str | None]:
-        """Lyrics stored on the Jellyfin server itself.
-
-        Returns (synced_result_or_None, unsynced_text_or_None).
-        """
+        """Returns a tuple (synced_result_or_None, unsynced_text_or_None) for song lyrics."""
         try:
             res = self._request("GET", f"/Audio/{track_id}/Lyrics")
             lines = (res or {}).get("Lyrics")
@@ -554,6 +439,7 @@ class JellyfinProvider(MediaProvider):
             return None, None
 
     def get_lyrics(self, track_id: str, lrclib_enabled: bool = True, synced_enabled: bool = True) -> dict:
+        """Returns a dictionary containing song lyrics."""
         synced, jf_unsynced = self._server_lyrics(track_id, synced_enabled)
         if synced:
             return synced
@@ -580,15 +466,12 @@ class JellyfinProvider(MediaProvider):
         # The fileName query param tells Jellyfin how to parse the file
         query = urllib.parse.urlencode({"fileName": "lyrics.lrc"})
         url = f"{self.server_url}/Audio/{track_id}/Lyrics?{query}"
-
         headers = {
             "X-Emby-Token": self.access_token,
             "Content-Type": "text/plain",
             "User-Agent": USER_AGENT,
         }
-
         req = urllib.request.Request(url, data=lyrics_text.encode('utf-8'), headers=headers, method="POST")
-
         try:
             with urllib.request.urlopen(req, timeout=5) as response:
                 return response.status in (200, 204)
