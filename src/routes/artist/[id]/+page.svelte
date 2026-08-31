@@ -115,7 +115,7 @@
                     src={getImageUrl(artistData.id, 240)}
                     alt={artistData.name}
                     fallbackText={artistData.name}
-                    class="w-full max-w-[40vh] aspect-square md:w-55 md:h-55 mx-auto rounded-xl shadow-2xl border border-white/10 bg-zinc-800"
+                    class="w-full max-w-[40vh] aspect-square md:w-55 md:h-55 mx-auto rounded-full shadow-2xl border border-white/10 bg-zinc-800"
                 />
                 <svelte:fragment slot="meta">
                     <div

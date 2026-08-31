@@ -1,26 +1,32 @@
 """Anchor-based discovery queue builder.
+Takes into account the following factors:
+1. Genre tag similarity
+2. DSP feature similarity (timbre, tempo)
+3. BPM similarity
+4. Recency of play for track/album/artist (fatigue)
+5. Play history (skips repel, repeats penalize, full plays reward similar tracks)
+6. Track rating
+7. Manual queue adds (anchor harder, fade slower than algorithm picks)
+There's probably more I'm forgetting.
 
-    score(candidate) = (relevance - skip_repel) * repeat_penalty * fatigue
-                        * rating * duration_factor
+An initial pool of tracks is picked based on a "seed" track or list of seed tracks.
+The first track is a weighted random pick based on relevance to avoid queues being the same.
+After the first track, the next track is picked based on relevance to the last track played,
+with a recency-weighted average of all tracks played in the session as a secondary anchor.
+After a while, the seed track's influence decays so the queue can drift away from the seed and explore the library.
 
-Relevance blends similarity to the seed with a recency-weighted average over
-what the session has actually played, the seed's share decaying toward
-SEED_FLOOR* as the session runs. Manual queue adds anchor harder and fade slower
-than algorithm picks; a skipped algorithm pick repels similar candidates.
-Artist/album repeats, recently played tracks and short tracks are penalized
-rather than banned.
+Tag similarity, BPM similarity, and DSP similarity are all combined into a single "similarity" score.
+All 3 report values from [0-1] so that in the future the UI can give a user-friendly score breakdown.
 
-Similarity is genre-tag agreement plus DSP closeness. DSP evidence scales with
-how much of the library has been analyzed (DSP_FULL_COVERAGE), and a track with
-no cached features scores on tags alone rather than dropping out of the pool, so
-a part-analyzed library still builds a full queue.
+Certain values (genre, DSP, etc.) that run as background jobs are weighted less if the library is only partially analyzed.
 
-Wired into the live queue by radio.py. Everything above build_queue is a
-DB-read-only scoring layer; build_queue decides which candidates get picked.
+Wired into the live queue by radio.py. Everything above build_queue is a DB-read-only scoring layer.
+build_queue decides which candidates get picked.
 """
 import datetime
 import heapq
 import json
+import logging
 import math
 import random
 from operator import mul
@@ -28,35 +34,63 @@ from operator import mul
 from core.database import (Album, AlbumGenre, Artist, ArtistGenre, Genre, PlayHistory, Track,
                       TrackFeatures, track_scope_clause)
 
-# --- similarity scoring (shared: how two tracks compare) -------------------
+logger = logging.getLogger(__name__)
 
-ALBUM_TAG_WEIGHT = 1.0     # album tags are release-specific, trusted fully
-ARTIST_TAG_WEIGHT = 0.75   # artists span genres their releases don't all share
-TAG_EVIDENCE_MAX = 0.6     # ceiling on tag agreement's score contribution
-DSP_EVIDENCE_MAX = 0.4     # ceiling on DSP agreement's; a hard cap, so an untagged track
-                           # can't out-score corroborated tag evidence on raw DSP
-CORROBORATION_BONUS_MAX = 0.15  # bonus when tags and DSP agree independently
-CORROBORATION_THRESHOLD = 0.6   # gate both signals clear for that bonus, and the line
-                                # below which tag overlap counts as disagreement
-DSP_DISAGREEMENT_DISCOUNT = 0.7  # dsp evidence scales toward this fraction of itself as
-                                 # well-tagged tracks disagree; untagged pairs untouched
-SCORE_CEILING = TAG_EVIDENCE_MAX + DSP_EVIDENCE_MAX + CORROBORATION_BONUS_MAX
-DSP_FULL_COVERAGE = 0.9    # analyzed fraction at which DSP evidence carries full weight;
-                           # below it, evidence scales linearly with coverage
+# Similarity scoring tunables.
 
-BPM_DELTA_NORM = 60.0  # divisor mapping a BPM delta (see _bpm_distance) to [0, 1]
-VEC_DIST_NORM = 8.0    # fallback distance divisor for a track with no hubness stats yet;
-                       # ~sqrt(2 * vector length), typical for two standardized vectors
+# These 3 must sum to 1, and automatically adjust when there's poor data on one or more.
+GENRE_WEIGHT = 0.40    
+TIMBRE_WEIGHT = 0.42   
+TEMPO_WEIGHT = 0.18    
 
+DSP_FULL_COVERAGE = 0.9         # Fraction of library analyzed where DSP is full strength. If below this, it's a % of the library analyzed.
+ARTIST_TAG_WEIGHT = 0.75        # Fraction of album tag weights to use for artist tags when creating a tag profile. Default is 0.75 (artist tags are 75% as important as album tags).
+                                # This is because artists change styles over time, so artist tags are more of a general profile compared to the album, but still important.
+BPM_DELTA_NORM = 60.0           # Standard divisor to normalize BPM differences to [0-1] for scoring.
+VEC_DIST_NORM = 8.0             # Fallback distance divisor for a track with no hubness stats yet: ~sqrt(2 * vector length), typical for two standardized vectors.
+
+# Queue building tuneables.
+
+SKIP_THRESHOLD = 0.3            # Fraction of a track that needs to be played to avoid a skip penalty.
+RECENCY_DECAY = 0.85            # Per-round fade multiplier for a track's influence. Tracks start at full importance so the queue flows well.
+ANCHOR_WEIGHT_FLOOR = 0.02      # Floor before a track's influence weight is set to zero.
+SEED_FLOOR = 0.15               # Seed (initial track/tracks) relevance floor, to avoid forgetting about it entirely.
+SEED_FLOOR_RELAXATION = 0.353   # In a thin neighborhood, raises the seed floor higher to lean on the seed longer. Has no effect in a rich neighborhood.
+CLOSE_MATCH_BASELINE = 0.5      # Baseline score before a track is seen as "similar", used to determine how thin/rich a neighborhood of songs is.
+RICH_MATCH_SOFTNESS = 0.05      # How soft the line between "rich" and "thin" neighborhoods is. Rich neighborhood = many good song picks.
+RICH_MATCH_FRACTION = 0.01      # Fraction of the candidate pool, weighted by closeness (a near-perfect match counts fully, a borderline one barely), that reads a neighborhood as halfway between "rich" and "thin".
+SEED_DECAY_MINUTES = 60         # Listening time in minutes for the seed to drop to SEED_FLOOR, considered maximum drift.
+SEED_CLUSTER_RADIUS = 0.5       # Multi-track seeds discard any tracks more distant than this from the medoid, to avoid badly averaged data.
+MANUAL_BOOST = 3.0              # A manual queue add is worth this times as much as an algorithm pick.
+MANUAL_RECENCY_DECAY = 0.92     # Manual queue adds fade slower than algorithm picks, so a user can "lock in" a track for a while.
+SKIP_REPEL = 0.4                # A skip is multiplied to similarity by this amount, so a skipped track's neighbors are suppressed in the next pick.
+SKIP_FATIGUE_DECAY = 0.8        # Per-play falloff of skip recency, walked backward through a track's play history (most recent skip counts full, older ones fade).
+ARTIST_REPEAT_PENALTY = 0.55    # Decaying penalty used when an artist's song plays, to avoid a queue being only one artist
+ARTIST_REPEAT_RELAXATION = 0.289# How much the repeat penalty is relaxed over time, to not just ban an artist.
+ALBUM_REPEAT_PENALTY = 0.50     # Decaying penalty used when an album's song plays, to avoid a queue being only one album. Stricter than artist since similar mastering makes songs appear much more similar.
+ALBUM_REPEAT_RELAXATION = 0.48  # How much the repeat penalty is relaxed over time, to not just ban an album.
+LENIENCY_BASELINE = 0.62        # Relevance floor where repeat-penalty leniency starts, above CLOSE_MATCH_BASELINE because same-album DSP similarity clusters near 0.8.
+ARTIST_QUALITY_SPAN = 0.3       # relevance above LENIENCY_BASELINE needed for full leniency
+LENIENCY_SUSTAIN_DECAY = 0.9    # Raises leniency to this power per unit of artist load, so sustained repetition converges back to the full penalty. 1.0 disables.
+REPEAT_DECAY = 0.8              # Repeat load counts past picks by recency, not a window. Multiplier per-round.
+PRESEED_SEED_ALBUM = True       # Automatically penalize a seed's album to avoid the next song being the same album. Always off for albums with "Various Artists" credited.
+SEED_ALBUM_OPENER_PENALTY = 0.15# Extra multipler on a seed's album to avoid the next song being the same album. Double penalized with ALBUM_REPEAT_PENALTY
+SEED_ALBUM_PENALTY_DECAY = 0.4  # Per-pick fade on the seed's album opener penalty, so it can recur after a while.
+CONFIDENCE_RATIO = 0.8          # Picks draw from a pool of candidates scoring within this fraction of the best, so a single strong match doesn't dominate the draw.
+ABSOLUTE_SCORE_FLOOR = 0.18     # Floor for a song to not be worth even considering. The relative window above would open the draw to the whole library, so build_queue takes the single best outright instead.
+CONFIDENCE_POOL_MAX = 10        # Max amount of tracks to use in a pool for each pick.
+OPENER_MAX_ARTISTS = 10         # Max amount of unique artists in the opener pool, so a single artist doesn't dominate the draw.
+OPENER_RATIO = 0.7              # All opener candidates have to be good picks, so a thin neighborhood doesn't pool terrible tracks.
+OPENER_WEIGHT_POWER = 2.0       # Opener draw weight = score**this: the best fit usually opens the queue, but a few other good fits are still possible.
+RATING_NUDGE = 0.1              # Per-star score change around a neutral 3 stars
+SHORT_TRACK_FULL_S = 60         # Score ramps linearly with track length up to this in seconds, penalizing intros/interludes. Set low thanks to Minor Threat.
+FATIGUE_HALF_LIFE_DAYS = 12.0   # Recovery rate for a recently played track. Default: Track stops being penalized after 12 days. Tracks can still appear during the time, just not as likely.
+POOL_CAP = 250                  # candidates the per-pick loop scores, ranked by relevance.
 
 def _bulk_load_features() -> dict[str, dict]:
-    """Feature dict for every track with current-version cached features, in one
-    query. Each track's timbre-mean, timbre-variance and spectral-contrast are
-    concatenated into one vector, then standardized per dimension across the
-    library so no single dimension (raw MFCC[0] energy, say) dominates the
-    distance. Matches audio_analysis.compute_hubness_stats, so the stored hubness
-    stats describe these same distances. ``sq`` is the vector's squared norm,
-    cached for _sq_distance."""
+    """Returns a feature dict for every track with current-version cached features.
+    Timbre-mean, timbre-variance and spectral-contrast are concatenated into one vector
+    and standardized per dimension across the library so one doesn't outweight the others."""
     import numpy as np
 
     from services.audio_analysis import FEATURE_VERSION
@@ -77,6 +111,15 @@ def _bulk_load_features() -> dict[str, dict]:
         meta.append((bpm, dist_center, dist_scale))
 
     if not track_ids:
+        # If the library is analyzed under an old FEATURE_VERSION, warn about missing DSP
+        # info to avoid odd behavior from prevous versions.
+        stale = (TrackFeatures.select()
+                 .where(TrackFeatures.feature_version != FEATURE_VERSION).count())
+        if stale:
+            logger.warning(
+                "No cached features at version %s, but %d track(s) are cached at an "
+                "older version. Discovery is running without any DSP evidence until "
+                "the library is re-analyzed.", FEATURE_VERSION, stale)
         return {}
 
     matrix = np.asarray(vectors, dtype=float)
@@ -85,8 +128,7 @@ def _bulk_load_features() -> dict[str, dict]:
     matrix = (matrix - matrix.mean(axis=0)) / std
     norms = (matrix * matrix).sum(axis=1).tolist()
 
-    # The three stored scalars are coerced here: a row written before the hubness
-    # columns existed carries NULL, which every comparison below would reject.
+    # Returns a dict of track_id -> {"vec": (vector), "sq": squared_norm, "bpm": bpm, "dist_center": dist_center, "dist_scale": dist_scale}
     return {
         track_id: {"vec": tuple(vec), "sq": sq, "bpm": bpm or 0.0,
                    "dist_center": dist_center or 0.0, "dist_scale": dist_scale or 0.0}
@@ -94,44 +136,29 @@ def _bulk_load_features() -> dict[str, dict]:
         in zip(track_ids, matrix.tolist(), norms, meta)
     }
 
-
 def _canon_tag(name: str) -> str:
-    """Canonical similarity key for a genre name: lowercased, hyphens and
-    underscores folded to single spaces, so "Post-Hardcore" and "Post Hardcore"
-    stay one tag."""
+    """Canonicalize a tag name. Replaces "-" and "_" with spaces, lowercases, and collapses whitespace."""
     return " ".join(name.lower().replace("-", " ").replace("_", " ").split())
 
-
 def _normalize_group(rows: list[tuple[str, int]]) -> dict[str, float]:
-    """Scales one entity's raw tag weights to [0, 1] against its top tag, square
-    rooted so real secondary tags survive rather than being crushed by the top one.
-
-    Curated sources (MusicBrainz/Jellyfin) store weight=0 -- presence, no count --
-    so an all-curated group is fully trusted, and curated tags mixed in with
-    counted ones scale to 0 and drop out: broad curated genres ("Rock") inflate
-    overlap between loosely related tracks.
-    """
+    """Reurns a scaled dict of canonical tag -> weight in [0, 1] for one entity's raw tag rows.
+    MusicBrainz/Jellyfin are fully trusted, so weight=0 is presence-only and counts as a tag.
+    Scaled with the top tag at 1.0, square-rooted so secondary tags survive rather than being crushed by the top one."""
     if not rows:
         return {}
     max_w = max(w for _, w in rows)
     scaled: dict[str, float] = {}
     for name, w in rows:
-        # Punctuation variants canonicalize to one key; keep the stronger reading.
-        # A weight-0 tag still lands as a key: it contributes nothing to overlap,
-        # but it is evidence the entity is tagged at all (see tag_confidence).
+        # Still add with weight 0, just means not Last.fm
         v = 1.0 if max_w <= 0 else math.sqrt(w / max_w)
         prev = scaled.get(name)
         if prev is None or v > prev:
             scaled[name] = v
     return scaled
 
-
 def _blend_tags(album_tags: dict[str, float], artist_tags: dict[str, float]) -> dict[str, float]:
-    """Per-tag weight in [0, 1] for one track from its album's and artist's
-    normalized tag groups. Album tags are release-specific and trusted fully;
-    artist tags are scaled by ARTIST_TAG_WEIGHT so they fill gaps in thinly
-    tagged albums without outranking the album's own."""
-    weights = {name: ALBUM_TAG_WEIGHT * w for name, w in album_tags.items()}
+    """Returns a per-track dict of canonical tag -> weight in [0, 1] for one track from its album's and artist's normalized tag groups."""
+    weights = dict(album_tags)
     for name, w in artist_tags.items():
         w *= ARTIST_TAG_WEIGHT
         prev = weights.get(name)
@@ -139,9 +166,8 @@ def _blend_tags(album_tags: dict[str, float], artist_tags: dict[str, float]) -> 
             weights[name] = w
     return weights
 
-
 def _bulk_genre_rows(model, entity_field) -> dict[str, list[tuple[str, int]]]:
-    """(canonical tag, weight) rows grouped by album or artist id, in one query."""
+    """Returns (canonical tag, weight) rows grouped by album or artist id, in one query."""
     rows: dict[str, list[tuple[str, int]]] = {}
     for entity_id, weight, name in model.select(entity_field, model.weight, Genre.name).join(Genre).tuples():
         rows.setdefault(entity_id, []).append((_canon_tag(name), weight))
@@ -168,11 +194,8 @@ def _bulk_track_tags(tracks: list[tuple]) -> dict[str, dict[str, float]]:
         tags[track_id] = group
     return tags
 
-
 def _weighted_overlap(a: dict[str, float], b: dict[str, float]) -> float:
-    """Weighted Jaccard (Ruzicka similarity) over tag strengths. Walks both dicts
-    directly instead of building a key union -- this runs hundreds of thousands
-    of times per queue build, and the set allocations dominated it."""
+    """Weighted Jaccard (Ruzicka similarity) over tag strengths. Walks both dicts directly."""
     if not a or not b:
         return 0.0
     num = 0.0
@@ -192,7 +215,6 @@ def _weighted_overlap(a: dict[str, float], b: dict[str, float]) -> float:
             den += vb
     return num / den if den else 0.0
 
-
 def _sq_distance(feat_a: dict, feat_b: dict) -> float:
     """Squared euclidean distance between two feature vectors, via
     ||a-b||^2 = ||a||^2 + ||b||^2 - 2 a.b so the inner loop is one C-level
@@ -200,14 +222,9 @@ def _sq_distance(feat_a: dict, feat_b: dict) -> float:
     dot = sum(map(mul, feat_a["vec"], feat_b["vec"]))
     return max(feat_a["sq"] + feat_b["sq"] - 2.0 * dot, 0.0)
 
-
 def _bpm_distance(bpm_a: float, bpm_b: float) -> float:
-    """Absolute BPM difference, octave-corrected: beat trackers commonly report
-    half or double the perceptible tempo (160 BPM detected as 80), so compare
-    against the closest octave alignment. Halving either side keeps this
-    symmetric -- halving only one made similarity(a, b) != similarity(b, a)."""
-    return min(abs(bpm_a - bpm_b), abs(bpm_a - bpm_b / 2), abs(bpm_a / 2 - bpm_b))
-
+    """Absolute BPM difference. No octave correction, causes false positives."""
+    return abs(bpm_a - bpm_b)
 
 def _normal_sf(x: float, mean: float, std: float) -> float:
     """Survival function of Normal(mean, std) at x: P(X > x)."""
@@ -216,6 +233,7 @@ def _normal_sf(x: float, mean: float, std: float) -> float:
     z = (x - mean) / std
     return 1.0 - 0.5 * (1.0 + math.erf(z / math.sqrt(2)))
 
+# Caution: This code was AI-Generated in its entirety.
 
 def _mutual_proximity(dist: float, feat_a: dict, feat_b: dict) -> float:
     """Mutual Proximity (Schnitzer et al.): MP(a,b) = P(dist > d | a) *
@@ -229,41 +247,30 @@ def _mutual_proximity(dist: float, feat_a: dict, feat_b: dict) -> float:
     p_b = _normal_sf(dist, feat_b["dist_center"], feat_b["dist_scale"])
     return p_a * p_b
 
+# End AI-Generated code.
 
 def similarity(feat_a: dict | None, feat_b: dict | None, tags_a: dict[str, float],
                 tags_b: dict[str, float], dsp_weight: float = 1.0) -> float:
-    """Confidence in [0, SCORE_CEILING] that two tracks are related: tag agreement
-    (up to TAG_EVIDENCE_MAX, scaled by how many tags back it), DSP closeness (up
-    to DSP_EVIDENCE_MAX * dsp_weight), and a bonus when both agree strongly. The
-    per-signal ceilings are hard caps, so a track with no genre identity can't
-    climb the rankings on DSP alone.
-
-    ``dsp_weight`` scales every DSP-derived term with library analysis coverage.
-    Either feat may be None, which scores that pair on tags alone."""
+    """Returns a confidence from [0-1] that a pair of tracks are related.
+    Confidence is a weighted blend of genre tag overlap, DSP feature similarity, and BPM similarity.
+    If one of these signals is missing, the others gain more weight to make up the difference. If all signals are missing, returns 0.0."""
     tag_overlap = _weighted_overlap(tags_a, tags_b)
     tag_confidence = min(len(tags_a), len(tags_b), 4) / 4.0
-    score = tag_confidence * tag_overlap * TAG_EVIDENCE_MAX
+    genre_pct = tag_confidence * tag_overlap
+    w_genre = GENRE_WEIGHT if (tags_a and tags_b) else 0.0
 
     if dsp_weight <= 0.0 or feat_a is None or feat_b is None:
-        return score
+        return genre_pct
 
-    # Timbre-vector proximity carries the bulk of the DSP signal, so it takes the
-    # larger weight; tempo agreement is octave-corrected.
     vec_closeness = _mutual_proximity(math.sqrt(_sq_distance(feat_a, feat_b)), feat_a, feat_b)
     norm_bpm = min(_bpm_distance(feat_a["bpm"], feat_b["bpm"]) / BPM_DELTA_NORM, 1.0)
-    dsp_score = 0.7 * vec_closeness + 0.3 * (1.0 - norm_bpm)
+    timbre_pct = vec_closeness
+    tempo_pct = 1.0 - norm_bpm
 
-    disagreement = (tag_confidence * max(0.0, CORROBORATION_THRESHOLD - tag_overlap)
-                    / CORROBORATION_THRESHOLD)
-    score += (dsp_score * DSP_EVIDENCE_MAX * dsp_weight
-              * (1.0 - DSP_DISAGREEMENT_DISCOUNT * disagreement))
-
-    if tag_overlap > CORROBORATION_THRESHOLD and dsp_score > CORROBORATION_THRESHOLD:
-        tag_excess = (tag_overlap - CORROBORATION_THRESHOLD) / (1.0 - CORROBORATION_THRESHOLD)
-        dsp_excess = (dsp_score - CORROBORATION_THRESHOLD) / (1.0 - CORROBORATION_THRESHOLD)
-        score += CORROBORATION_BONUS_MAX * dsp_weight * min(tag_excess, dsp_excess)
-    return score
-
+    w_timbre = TIMBRE_WEIGHT * dsp_weight
+    w_tempo = TEMPO_WEIGHT * dsp_weight
+    total_w = w_genre + w_timbre + w_tempo
+    return (w_genre * genre_pct + w_timbre * timbre_pct + w_tempo * tempo_pct) / total_w
 
 def _blend_profile(track_ids: list[str], features_by_id: dict[str, dict]) -> dict | None:
     """Average N tracks' feature vectors into one synthetic feat (build_queue's
@@ -285,27 +292,16 @@ def _blend_profile(track_ids: list[str], features_by_id: dict[str, dict]) -> dic
     if vec_acc is None:
         return None
     vec = tuple(v / count for v in vec_acc)
-    # Hubness is a property of one track's real distance distribution, not
-    # something meaningful to average; build_queue copies the primary seed's in.
+    # Hubness is a property of one track's real distance distribution, not something to average
     return {"vec": vec, "sq": sum(v * v for v in vec), "bpm": bpm_acc / count,
             "dist_center": 0.0, "dist_scale": 0.0}
 
-
 def _dsp_weight(analyzed: int, total: int) -> float:
-    """DSP evidence is only as trustworthy as the analysis is complete: with a
-    fraction of the library analyzed, lean on tags instead of on whichever tracks
-    happen to have features."""
+    """Automatically scales DSP's weight in scoring if a library doesn't have full analysis."""
     coverage = analyzed / total if total else 0.0
     return min(coverage / DSP_FULL_COVERAGE, 1.0)
 
-
-# --- entity similarity (how two albums or two artists compare) ---------------
-#
-# The same scoring as tracks, over profiles aggregated from an entity's tracks.
-# This backs the "similar albums"/"similar artists" browse surfaces, which used
-# to carry their own genre-overlap ranking; sharing the scorer means tuning it
-# once moves both the radio queue and what the detail pages recommend.
-
+# Entity Similarity, used to populate dynamic but not live sections in home/detail pages.
 
 class _EntityIndex:
     """Album and artist profiles for one comparison pass, loaded together
@@ -314,14 +310,8 @@ class _EntityIndex:
     __slots__ = ("album_feats", "album_tags", "artist_feats", "artist_tags",
                  "album_artist", "dsp_weight")
 
-
 def _entity_tag_profiles() -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]:
-    """Normalized tag weights per album id and per artist id.
-
-    An album's profile is its own tags filled in by its artist's, the same blend
-    a track gets. An artist's is their own tags filled in by the peak across
-    their albums', so an artist tagged only at the release level still has one.
-    """
+    """Normalized tag weights per album id and per artist id."""
     album_groups = {aid: _normalize_group(rows)
                     for aid, rows in _bulk_genre_rows(AlbumGenre, AlbumGenre.album).items()}
     artist_groups = {aid: _normalize_group(rows)
@@ -347,12 +337,9 @@ def _entity_tag_profiles() -> tuple[dict[str, dict[str, float]], dict[str, dict[
     }
     return album_tags, artist_tags
 
-
 def load_entity_index(library_ids: list[str] | None = None) -> _EntityIndex:
     """Build every album's and artist's feature/tag profile in one pass over the
-    library. This is the whole cost of a comparison -- ranking against a loaded
-    index is trivial -- so a caller making several comparisons should build one
-    index and pass it to each, rather than letting each rebuild its own."""
+    library. Main cost of analysis, so this should stay loaded in memory."""
     query = Track.select(Track.id, Track.artist, Track.album)
     scope = track_scope_clause(library_ids)
     if scope is not None:
@@ -381,12 +368,10 @@ def load_entity_index(library_ids: list[str] | None = None) -> _EntityIndex:
     index.dsp_weight = _dsp_weight(analyzed, len(rows))
     return index
 
-
 def _rank_similar(target_id: str, feats: dict, tags: dict, exclude_ids: set[str],
                    cap: int, dsp_weight: float) -> list[str]:
-    """Entity ids most similar to target_id, best first. Scores every entity that
-    has a profile of either kind, so an untagged-but-analyzed album can still
-    place; anything scoring zero has no evidence at all and is dropped."""
+    """Returns a list of entity ids most similar to target_id, best first. Scores every entity that
+    has a profile of either kind, so an untagged album can still place."""
     target_feat = feats.get(target_id)
     target_tags = tags.get(target_id, {})
     if target_feat is None and not target_tags:
@@ -401,13 +386,10 @@ def _rank_similar(target_id: str, feats: dict, tags: dict, exclude_ids: set[str]
             scored.append((score, entity_id))
     return [entity_id for _, entity_id in heapq.nlargest(cap, scored)]
 
-
 def similar_albums(album_id: str, cap: int = 20, exclude_artist_id: str | None = None,
                     library_ids: list[str] | None = None,
                     index: _EntityIndex | None = None) -> list[str]:
-    """Album ids most similar to album_id, best first. exclude_artist_id drops
-    that artist's own releases, which a "similar albums" row wants separated from
-    a "more by this artist" one."""
+    """Album ids most similar to album_id, best first. Excludes an artist's own releases."""
     if index is None:
         index = load_entity_index(library_ids)
     exclude: set[str] = set()
@@ -416,7 +398,6 @@ def similar_albums(album_id: str, cap: int = 20, exclude_artist_id: str | None =
                    if artist_id == exclude_artist_id}
     return _rank_similar(album_id, index.album_feats, index.album_tags,
                          exclude, cap, index.dsp_weight)
-
 
 def similar_artists(artist_id: str, cap: int = 20,
                      library_ids: list[str] | None = None,
@@ -427,118 +408,31 @@ def similar_artists(artist_id: str, cap: int = 20,
     return _rank_similar(artist_id, index.artist_feats, index.artist_tags,
                          set(), cap, index.dsp_weight)
 
-
-# --- queue selection ---------------------------------------------------------
-
-SKIP_THRESHOLD = 0.3          # completion fraction below this counts as a skip
-RECENCY_DECAY = 0.85          # per-step fade of a played track's anchor weight; the newest
-                              # anchor is full weight, so each pick flows into the next
-ANCHOR_WEIGHT_FLOOR = 0.02    # anchors holding less than this share of the total weight
-                              # drop out of the blend instead of being scored for a
-                              # rounding error's worth of influence
-SEED_FLOOR = 0.15             # seed's minimum share of the relevance blend, rich neighborhood
-SEED_FLOOR_THIN = 0.45        # ...much higher in a thin one, where drifting off the seed
-                              # hits a similarity cliff within a few picks
-CLOSE_MATCH_BASELINE = 0.5    # similarity above this counts as a genuinely close match: the
-                              # line richness's excess mass sums above. Kept separate from
-                              # LENIENCY_BASELINE, which must not feed back into richness.
-RICH_MASS_TARGET = 8.0        # richness = the seed's summed excess similarity to OTHER
-                              # artists over this target, so a small confidently close
-                              # cluster reads richer than a pile of so-so matches
-SEED_DECAY_MINUTES = 60       # listening time for seed weight to fall 1.0 -> floor
-SEED_CLUSTER_RADIUS = 0.5     # multi-track seeds keep only tracks within this similarity
-                              # of the most central one (see _coherent_seed)
-MANUAL_BOOST = 3.0            # a manually queued track anchors this much harder than an
-                              # algorithm pick of the same completion
-MANUAL_RECENCY_DECAY = 0.92   # ...and fades far slower than RECENCY_DECAY, steering the
-                              # next several picks instead of one; manual adds stack
-SKIP_REPEL = 0.4              # push-down from an algorithm-skipped track, scaled by how
-                              # similar the candidate is to it
-ARTIST_REPEAT_PENALTY = 0.55  # score multiplier per recent same-artist pick, rich
-                              # neighborhood: drops a repeat below an unrelated track
-ARTIST_REPEAT_PENALTY_THIN = 0.68  # ...eased in a thin neighborhood, but only for a candidate
-                              # whose own relevance earns it (ARTIST_QUALITY_SPAN)
-ALBUM_REPEAT_PENALTY = 0.50   # same shape per same-album pick, firmer than the artist one:
-                              # shared mastering makes same-album tracks read near-identical
-                              # on DSP, overstating how distinct they are
-ALBUM_REPEAT_PENALTY_THIN = 0.74  # a seed whose only strong matches are its own album should
-                              # play several of them before spreading out
-LENIENCY_BASELINE = 0.62      # relevance floor at which repeat-penalty leniency starts, above
-                              # CLOSE_MATCH_BASELINE because same-album DSP similarity
-                              # clusters near 0.8 and would otherwise always clear the gate
-ARTIST_QUALITY_SPAN = 0.3     # relevance above LENIENCY_BASELINE needed for full
-                              # repeat-penalty leniency; none below the baseline
-LENIENCY_SUSTAIN_DECAY = 0.9  # raises leniency to this power per unit of artist load, so
-                              # sustained repetition converges back toward the full
-                              # penalty rather than crossing it all at once; 1.0 disables
-REPEAT_DECAY = 0.8            # repeat load counts past picks by recency, not a window:
-                              # the last pick weighs 1, older ones fade by this per step
-PRESEED_SEED_ARTIST = False   # seed's own artist may open and recur
-PRESEED_SEED_ALBUM = True     # ...but radio shouldn't just replay the seed's own album.
-                              # Skipped for compilations (_is_compilation).
-SEED_ALBUM_OPENER_PENALTY = 0.15  # extra multiplier on the seed's own album at the opener,
-                              # where the ordinary album penalty loses to the timbre
-                              # vector's album effect. Multiplicative, so not a ban.
-SEED_ALBUM_PENALTY_DECAY = 0.4  # per-pick fade of the exponent above: the penalty is
-                              # SEED_ALBUM_OPENER_PENALTY ** (this ** pick_index), full
-                              # strength at the opener and nearly gone a few tracks later
-CONFIDENCE_RATIO = 0.8        # picks draw from candidates within this fraction of the best
-                              # score, weighted toward the top. A hard floor: a fully open
-                              # score-weighted draw measurably hurt flow and mean fit.
-ABSOLUTE_SCORE_FLOOR = 0.18   # below this a candidate isn't a weak match, it's no match, and
-                              # the relative window above would open the draw to the whole
-                              # library. build_queue then takes the single best outright.
-OPENER_MAX_ARTISTS = 5        # opener pool: the best track of up to this many closest-
-                              # fitting artists, the seed's own always included
-OPENER_RATIO = 0.7            # ...qualifying only within this fraction of the top score,
-                              # so one-real-match seeds don't pad with weak openers
-OPENER_WEIGHT_POWER = 2.0     # opener draw weight = score**this: the best fit usually
-                              # opens, strong cross-artist fits get a turn across reruns
-RATING_NUDGE = 0.1            # per-star score change around a neutral 3 stars
-SHORT_TRACK_FULL_S = 100      # score ramps linearly with track length up to this, then
-                              # flat: interludes and intros are unlikely picks, not banned
-FATIGUE_HALF_LIFE_DAYS = 12.0 # recovery rate for a recently played track
-SKIP_FIZZLE = 0.5             # suppression per unit of recency-weighted skip load
-SKIP_FATIGUE_DECAY = 0.8      # falloff for that skip recency; same curve as REPEAT_DECAY on
-                              # its own timescale (plays across history, not picks in a queue)
-POOL_CAP = 250                # candidates the per-pick loop scores, ranked by relevance
-
-
 def _duration_factor(duration_ms: int | None) -> float:
-    """Ramps 0 -> 1.0 over SHORT_TRACK_FULL_S, flat after. Unknown durations
-    count as full length so missing data never suppresses a track."""
+    """Returns a penalty multiplier for short tracks, from 0 to 1.0."""
     if not duration_ms:
         return 1.0
     return min((duration_ms / 1000.0) / SHORT_TRACK_FULL_S, 1.0)
 
-
 def _coherent_seed(seed_ids: list[str], features_by_id: dict[str, dict],
                     tags_by_id: dict[str, dict[str, float]], dsp_weight: float,
                     radius: float) -> list[str]:
-    """Drop outliers from a multi-track seed: keep tracks within ``radius`` of the
-    medoid so the target is one coherent cluster, not the average of a varied
-    catalogue. A cohesive album keeps every track; a punk-and-acoustic artist
-    sample keeps the dominant side."""
+    """Returns a subset of seed_ids that are all mutually similar,
+    so the seed is one coherent cluster rather than a varied catalogue.
+    Uses the medoid as the center of the cluster and keeps only tracks within radius of it."""
     ids = [i for i in seed_ids if i in features_by_id]
     if len(ids) <= 2:
         return ids
-
     def s(a: str, b: str) -> float:
         return similarity(features_by_id[a], features_by_id[b],
                           tags_by_id.get(a, {}), tags_by_id.get(b, {}), dsp_weight)
-
     medoid = max(ids, key=lambda a: sum(s(a, b) for b in ids if b != a))
     return [i for i in ids if i == medoid or s(medoid, i) >= radius]
 
-
 def _is_compilation(album_id: str) -> bool:
-    """True when the album's credited artist is a "Various Artists" form, so
-    build_queue can skip PRESEED_SEED_ALBUM for it. Trusts curation
-    (Album.artist) rather than counting distinct per-track artists, which guest
-    features ("... feat. Kellin Quinn") would false-positive."""
+    """True when the album's credited artist is a "Various Artists" form."""
     row = Album.select(Artist.name).join(Artist).where(Album.id == album_id).tuples().first()
     return bool(row and row[0]) and "various artist" in row[0].lower()
-
 
 def _repeat_load(recent: list[str]) -> dict[str, float]:
     """Recency-decayed tally per id: the last entry contributes 1.0, older ones
@@ -550,11 +444,9 @@ def _repeat_load(recent: list[str]) -> dict[str, float]:
         weight *= REPEAT_DECAY
     return load
 
-
 def _blend_seed_tags(seed_ids: list[str], tags_by_id: dict[str, dict[str, float]]) -> dict[str, float]:
-    """Multi-track seed tag profile: each tag's peak weight across the seed
-    tracks, not the mean -- averaging dilutes a distinctive genre tagged on only
-    some releases into the generic tags every release shares."""
+    """Multi-track blended seed for album/artist radios. Averages out the tags of all seed tracks,
+    but keeps the strongest weight for each instead of a true average."""
     blended: dict[str, float] = {}
     for tid in seed_ids:
         for name, w in tags_by_id.get(tid, {}).items():
@@ -563,13 +455,9 @@ def _blend_seed_tags(seed_ids: list[str], tags_by_id: dict[str, dict[str, float]
                 blended[name] = w
     return blended
 
-
 def _bulk_load_fatigue() -> dict[str, float]:
-    """Per-track playback-fatigue multiplier (1.0 = unsuppressed) for every track
-    with play history, in one query. Recency suppresses a recently played track,
-    recovering over FATIGUE_HALF_LIFE_DAYS; each play below SKIP_THRESHOLD adds
-    recency-weighted skip load that multiplies in SKIP_FIZZLE. Tracks absent from
-    the result mean 1.0 to the caller."""
+    """Returns a per-track playback-fatigue multiplier for every track with play history, in one query.
+    Recency suppresses a recently played track, recovering over FATIGUE_HALF_LIFE_DAYS."""
     plays: dict[str, list[tuple[datetime.datetime, float]]] = {}
     query = (PlayHistory
              .select(PlayHistory.track, PlayHistory.played_at, PlayHistory.completion_pct)
@@ -591,14 +479,11 @@ def _bulk_load_fatigue() -> dict[str, float]:
             if pct < skip_pct:
                 skip_load += weight
             weight *= SKIP_FATIGUE_DECAY
-        fatigue[track_id] = recency * (SKIP_FIZZLE ** skip_load)
+        fatigue[track_id] = recency * (0.5 ** skip_load)
     return fatigue
 
-
 class QueueEntry:
-    """One scored candidate. ``sim_to_seed`` and ``skip_repel`` are fixed for a
-    whole build and computed once; ``anchor_sims`` caches similarity to each
-    anchor by index, since anchors are only ever appended."""
+    """One scored candidate."""
 
     __slots__ = ("track_id", "artist_id", "album_id", "rating", "duration_ms",
                  "feat", "tags", "fatigue", "sim_to_seed", "skip_repel", "anchor_sims")
@@ -612,7 +497,6 @@ class QueueEntry:
         self.sim_to_seed = 0.0
         self.skip_repel = 0.0
         self.anchor_sims: list[float | None] = []
-
 
 class _Anchors:
     """The session's played tracks, newest last, with the recency weights the
@@ -653,28 +537,25 @@ class _Anchors:
         self.start = start
         self.total = sum(weights[start:]) or 1.0
 
-
 class _Scorer:
     """Scores candidates at one point in a session. build_queue updates the
-    mutable fields between picks; ``scale`` shrinks every threshold compared
-    against a raw score in step with the DSP-weighted score ceiling."""
+    mutable fields between picks."""
 
     __slots__ = ("anchors", "artist_load", "album_load", "seed_weight",
-                 "richness", "scale", "dsp_weight")
+                 "richness", "dsp_weight", "quality_ref")
 
-    def __init__(self, anchors: _Anchors, richness: float, scale: float, dsp_weight: float):
+    def __init__(self, anchors: _Anchors, richness: float, dsp_weight: float,
+                 best_sim: float):
         self.anchors = anchors
         self.artist_load: dict[str, float] = {}
         self.album_load: dict[str, float] = {}
         self.seed_weight = 1.0
         self.richness = richness
-        self.scale = scale
         self.dsp_weight = dsp_weight
+        self.quality_ref = best_sim or 1.0 # Leniency is graded against the best match this seed actually has, not an absolute scale
 
     def score(self, e: QueueEntry) -> float:
-        """Full score for one candidate: relevance to the seed blended with
-        relevance to where the session has actually gone, less skip repulsion,
-        times the repeat/fatigue/rating/duration multipliers."""
+        """Full score for one candidate, including repeat/skip penalties."""
         anchors = self.anchors
         n = len(anchors.feats)
         if n:
@@ -697,14 +578,12 @@ class _Scorer:
         a_load = self.artist_load.get(e.artist_id, 0.0)
         b_load = self.album_load.get(e.album_id, 0.0)
         if a_load or b_load:
-            scale = self.scale
-            quality = min(max(0.0, relevance - LENIENCY_BASELINE * scale)
-                          / (ARTIST_QUALITY_SPAN * scale), 1.0)
+            ref = self.quality_ref
+            quality = min(max(0.0, relevance - LENIENCY_BASELINE * ref)
+                          / (ARTIST_QUALITY_SPAN * ref), 1.0)
             leniency = (1.0 - self.richness) * quality * LENIENCY_SUSTAIN_DECAY ** a_load
-            artist_penalty = (ARTIST_REPEAT_PENALTY
-                              + (ARTIST_REPEAT_PENALTY_THIN - ARTIST_REPEAT_PENALTY) * leniency)
-            album_penalty = (ALBUM_REPEAT_PENALTY
-                             + (ALBUM_REPEAT_PENALTY_THIN - ALBUM_REPEAT_PENALTY) * leniency)
+            artist_penalty = _relax(ARTIST_REPEAT_PENALTY, ARTIST_REPEAT_RELAXATION * leniency)
+            album_penalty = _relax(ALBUM_REPEAT_PENALTY, ALBUM_REPEAT_RELAXATION * leniency)
             repeat_penalty = artist_penalty ** a_load * album_penalty ** b_load
         else:
             repeat_penalty = 1.0
@@ -713,6 +592,93 @@ class _Scorer:
         return ((relevance - e.skip_repel) * repeat_penalty * e.fatigue * rating
                 * _duration_factor(e.duration_ms))
 
+def _soft_hinge(x: float, softness: float) -> float:
+    """max(0.0, x) with a rounded corner over softness.
+    Used so a near-match still contributes a little to richness, instead of dropping to zero all at once.
+    """
+    z = x / softness
+    if z > 30.0:      # exp overflows out here, and the ramp is linear anyway
+        return x
+    if z < -30.0:
+        return 0.0
+    return softness * math.log1p(math.exp(z))
+
+def _relax(base: float, amount: float) -> float:
+    """Eases base towards 1.0. Used to relax repeat penalties when the session is rich and the candidate is high-quality."""
+    return base + (1.0 - base) * amount
+
+def _resolve_seed(seed_track_id: str, extra_seed_ids: list[str] | None,
+                   features_by_id: dict, tags_by_id: dict,
+                   dsp_weight: float) -> tuple[dict | None, dict[str, float]]:
+    """The seed's feat/tags, blended with extra_seed_ids (an album/artist
+    description) when given. Hubness describes one track's real distance
+    distribution and doesn't average, so a blend keeps the primary seed's."""
+    seed_feat = features_by_id.get(seed_track_id)
+    seed_tags = tags_by_id.get(seed_track_id, {})
+    if not extra_seed_ids:
+        return seed_feat, seed_tags
+
+    seed_pool = _coherent_seed([seed_track_id, *extra_seed_ids], features_by_id,
+                               tags_by_id, dsp_weight, SEED_CLUSTER_RADIUS)
+    blended_feat = _blend_profile(seed_pool, features_by_id)
+    if blended_feat is None:
+        return seed_feat, seed_tags
+    if seed_feat is not None:
+        blended_feat["dist_center"] = seed_feat["dist_center"]
+        blended_feat["dist_scale"] = seed_feat["dist_scale"]
+    return blended_feat, _blend_seed_tags(seed_pool, tags_by_id)
+
+
+def _session_anchors(session_context, feedback: dict[str, float], manual_ids: set[str],
+                     track_by_id: dict, features_by_id: dict, tags_by_id: dict,
+                     seed: Track, preseed_album: bool):
+    """Builds session anchors from real playback history before scoring.
+    Fully/mostly played tracks reinforce similar candidates. Skipped
+    algorithm picks repel neighbors, while skipped manual picks are treated as
+    a change of mind and ignored. Tracks missing from feedback are treated as
+    unheard and only influence repeat penalties."""
+    anchors = _Anchors()
+    skips: list[tuple[dict | None, dict[str, float]]] = []
+    recent_artists: list[str] = []
+    recent_albums: list[str] = [seed.album_id] if preseed_album else []
+    elapsed_ms = float(seed.duration_ms or 0)
+    for ctx_id in (session_context or ()):
+        ctx_row = track_by_id.get(ctx_id)
+        if ctx_row is None:
+            continue
+        ctx_feat = features_by_id.get(ctx_id)
+        ctx_tags = tags_by_id.get(ctx_id, {})
+        if ctx_feat is None and not ctx_tags:
+            continue
+        recent_artists.append(ctx_row[1])
+        recent_albums.append(ctx_row[2])
+        if ctx_id not in feedback:
+            continue
+        completion = min(max(feedback[ctx_id], 0.0), 1.0)
+        if completion < SKIP_THRESHOLD:
+            if ctx_id not in manual_ids:
+                skips.append((ctx_feat, ctx_tags))
+        else:
+            manual = ctx_id in manual_ids
+            anchors.add(ctx_feat, ctx_tags, completion * (MANUAL_BOOST if manual else 1.0),
+                        MANUAL_RECENCY_DECAY if manual else RECENCY_DECAY)
+        elapsed_ms += (ctx_row[4] or 0) * completion
+    return anchors, skips, recent_artists, recent_albums, elapsed_ms
+
+def _candidate_pool(rows: list[tuple], exclude_ids: set[str], features_by_id: dict,
+                    tags_by_id: dict, fatigue_by_id: dict) -> list[QueueEntry]:
+    """QueueEntry for every candidate with real tag/DSP evidence."""
+    candidates = []
+    for row in rows:
+        track_id = row[0]
+        if track_id in exclude_ids:
+            continue
+        feat = features_by_id.get(track_id)
+        tags = tags_by_id.get(track_id, {})
+        if feat is None and not tags:
+            continue
+        candidates.append(QueueEntry(row, feat, tags, fatigue_by_id.get(track_id, 1.0)))
+    return candidates
 
 def build_queue(seed_track_id: str, queue_length: int = 20,
                  rng: random.Random | None = None,
@@ -724,32 +690,22 @@ def build_queue(seed_track_id: str, queue_length: int = 20,
                  session_elapsed_ms: float | None = None,
                  reroll: bool = False,
                  library_ids: list[str] | None = None) -> tuple[list[QueueEntry], float]:
-    """Build a queue from ``seed_track_id``. Returns ``(entries, richness)``;
-    richness 0..1 says how much genuinely strong material surrounds the seed (see
-    RICH_MASS_TARGET) -- when it's low the queue already holds tighter to what
-    works (SEED_FLOOR_THIN), and a caller can threshold it to warn.
+    """Returns a queue built from seed_track_id and a richness score.
 
-    ``session_context``: track ids already played/queued, oldest first;
-    ``feedback`` maps them to completion fractions in [0, 1]; ``manual_ids`` marks
-    the hand-queued ones. Together they seed the anchors so a top-up continues the
-    real session. ``extra_seed_ids`` blend into the seed to describe an
-    album/artist. ``session_elapsed_ms`` floors the seed-decay clock. ``reroll``
-    draws the first pick flat over its pool so an explicit re-roll actually
-    changes the front of the queue. ``library_ids`` scopes the candidate pool to
-    the caller's Jellyfin library selection (see database.track_scope_clause) --
-    this module stays state-free, so the caller resolves the setting and passes it
-    in.
+    Returns (entries, richness) where richness is [0, 1] and estimates how much
+    genuinely strong material surrounds the seed (RICH_MATCH_FRACTION), so callers
+    can threshold and warn in thin neighborhoods.
+    session_context/feedback/manual_ids describe the real session so top-ups
+    continue naturally.
 
-    Per-track data is bulk-loaded once; the per-pick loop scores at most POOL_CAP
-    candidates. Returns an empty queue if the seed has neither cached features nor
-    genre tags, since there is then nothing to recommend from.
+    Returns an empty queue when the seed has neither cached DSP features nor genre
+    tags.
     """
     if rng is None:
         rng = random.Random()
     seed = Track.get_by_id(seed_track_id)
 
-    # id, artist_id, album_id, rating, duration_ms -- the only columns scoring
-    # reads, kept as tuples so a large library skips model hydration entirely.
+    # id, artist_id, album_id, rating, duration_ms
     query = Track.select(Track.id, Track.artist, Track.album, Track.rating, Track.duration_ms)
     scope = track_scope_clause(library_ids)
     if scope is not None:
@@ -760,30 +716,12 @@ def build_queue(seed_track_id: str, queue_length: int = 20,
     tags_by_id = _bulk_track_tags(rows)
     fatigue_by_id = _bulk_load_fatigue()
 
-    # Every threshold compared against a raw score scales with the DSP-weighted
-    # ceiling, or a part-analyzed library would read as one huge thin neighborhood.
     dsp_weight = _dsp_weight(sum(1 for row in rows if row[0] in features_by_id), len(rows))
-    scale = (TAG_EVIDENCE_MAX
-             + dsp_weight * (DSP_EVIDENCE_MAX + CORROBORATION_BONUS_MAX)) / SCORE_CEILING
 
-    seed_feat = features_by_id.get(seed_track_id)
-    seed_tags = tags_by_id.get(seed_track_id, {})
+    seed_feat, seed_tags = _resolve_seed(seed_track_id, extra_seed_ids, features_by_id,
+                                         tags_by_id, dsp_weight)
     if seed_feat is None and not seed_tags:
         return [], 0.0
-
-    if extra_seed_ids:
-        seed_pool = _coherent_seed([seed_track_id, *extra_seed_ids], features_by_id,
-                                   tags_by_id, dsp_weight, SEED_CLUSTER_RADIUS * scale)
-        blended_feat = _blend_profile(seed_pool, features_by_id)
-        if blended_feat is not None:
-            if seed_feat is not None:
-                # Hubness describes one track's real distance distribution and
-                # doesn't average, so the primary seed's carries over.
-                blended_feat["dist_center"] = seed_feat["dist_center"]
-                blended_feat["dist_scale"] = seed_feat["dist_scale"]
-            seed_feat = blended_feat
-            # Peak-blended, not the mean, so a distinctive genre survives.
-            seed_tags = _blend_seed_tags(seed_pool, tags_by_id)
 
     if exclude_ids is None:
         exclude_ids = set(session_context or ())
@@ -791,92 +729,50 @@ def build_queue(seed_track_id: str, queue_length: int = 20,
     feedback = feedback or {}
     manual_ids = manual_ids or set()
 
-    # Walk the real session history into anchors before scoring anything, so the
-    # candidate pool and first pick see where the session has actually gone. The
-    # seed's album pre-counts as played unless it's a compilation.
+    # The seed's album pre-counts as played unless it's a compilation.
     preseed_album = PRESEED_SEED_ALBUM and not _is_compilation(seed.album_id)
-    anchors = _Anchors()
-    skips: list[tuple[dict | None, dict[str, float]]] = []
-    recent_artists: list[str] = [seed.artist_id] if PRESEED_SEED_ARTIST else []
-    recent_albums: list[str] = [seed.album_id] if preseed_album else []
-    elapsed_ms = float(seed.duration_ms or 0)
-    for ctx_id in (session_context or ()):
-        ctx_row = track_by_id.get(ctx_id)
-        if ctx_row is None:
-            continue
-        ctx_feat = features_by_id.get(ctx_id)
-        ctx_tags = tags_by_id.get(ctx_id, {})
-        if ctx_feat is None and not ctx_tags:
-            continue
-        completion = min(max(feedback.get(ctx_id, 1.0), 0.0), 1.0)
-        if completion < SKIP_THRESHOLD:
-            # A skipped manual track is a change of mind and stops informing
-            # anything; a skipped algorithm track repels similar candidates.
-            if ctx_id not in manual_ids:
-                skips.append((ctx_feat, ctx_tags))
-        else:
-            manual = ctx_id in manual_ids
-            anchors.add(ctx_feat, ctx_tags, completion * (MANUAL_BOOST if manual else 1.0),
-                        MANUAL_RECENCY_DECAY if manual else RECENCY_DECAY)
-        recent_artists.append(ctx_row[1])
-        recent_albums.append(ctx_row[2])
-        elapsed_ms += (ctx_row[4] or 0) * completion
+    anchors, skips, recent_artists, recent_albums, elapsed_ms = _session_anchors(
+        session_context, feedback, manual_ids, track_by_id, features_by_id, tags_by_id,
+        seed, preseed_album)
     if session_elapsed_ms is not None:
         elapsed_ms = max(elapsed_ms, session_elapsed_ms)
 
-    # A track with neither features nor tags can never score above zero, so it
-    # never reaches the pool.
-    candidates = []
-    for row in rows:
-        track_id = row[0]
-        if track_id in exclude_ids:
-            continue
-        feat = features_by_id.get(track_id)
-        tags = tags_by_id.get(track_id, {})
-        if feat is None and not tags:
-            continue
-        candidates.append(QueueEntry(row, feat, tags, fatigue_by_id.get(track_id, 1.0)))
+    candidates = _candidate_pool(rows, exclude_ids, features_by_id, tags_by_id, fatigue_by_id)
 
-    # Both are fixed for the whole build (the seed profile and the skip set never
-    # change), so they are computed once here instead of per pick.
+    # Both are fixed for the whole build, so they are computed once here instead of per pick.
     for e in candidates:
         e.sim_to_seed = similarity(seed_feat, e.feat, seed_tags, e.tags, dsp_weight)
         if skips:
             e.skip_repel = SKIP_REPEL * max(similarity(f, e.feat, t, e.tags, dsp_weight)
                                             for f, t in skips)
 
-    # Seed floor and repeat penalties scale continuously with richness, no hard
-    # cutoff; the seed's own artist is excluded (see RICH_MASS_TARGET).
-    close_match = CLOSE_MATCH_BASELINE * scale
-    excess_mass = sum(e.sim_to_seed - close_match for e in candidates
-                      if e.sim_to_seed > close_match and e.artist_id != seed.artist_id)
-    richness = min(excess_mass / (RICH_MASS_TARGET * scale), 1.0)
-    seed_floor = SEED_FLOOR_THIN + (SEED_FLOOR - SEED_FLOOR_THIN) * richness
-    score_floor = ABSOLUTE_SCORE_FLOOR * scale
+    # Seed floor and repeat penalties scale continuously with richness
+    excess_mass = sum(_soft_hinge(e.sim_to_seed - CLOSE_MATCH_BASELINE, RICH_MATCH_SOFTNESS)
+                      for e in candidates if e.artist_id != seed.artist_id)
+    max_excess = 1.0 - CLOSE_MATCH_BASELINE
+    density = excess_mass / (max(len(candidates), 1) * RICH_MATCH_FRACTION * max_excess)
+    richness = density / (1.0 + density)
+    seed_floor = _relax(SEED_FLOOR, SEED_FLOOR_RELAXATION * (1.0 - richness))
 
     anchors.refresh()
-    scorer = _Scorer(anchors, richness, scale, dsp_weight)
+    best_sim = max((e.sim_to_seed for e in candidates), default=0.0)
+    scorer = _Scorer(anchors, richness, dsp_weight, best_sim)
     scorer.artist_load = _repeat_load(recent_artists)
     scorer.album_load = _repeat_load(recent_albums)
 
     # Rank the whole library once to pick the POOL_CAP candidates the loop scores
-    # -- by full relevance, not seed similarity alone, so tracks that match where
-    # the session has drifted survive the cut.
     remaining = heapq.nlargest(POOL_CAP, candidates, key=scorer.score)
 
     queue: list[QueueEntry] = []
     for i in range(queue_length):
-        # The scorer still reflects the session as of the start of this position;
-        # it is refreshed at the end of each iteration for the next one.
+        # The scorer still reflects the session as of the start of this position
         elapsed_minutes = elapsed_ms / 60000.0
         scorer.seed_weight = (max(seed_floor, 1.0 - elapsed_minutes / SEED_DECAY_MINUTES)
                               if len(anchors) else 1.0)
 
-        # Aggressive-but-decaying suppression of the seed's own album at the front
-        # of the queue: full strength at the opener, fading over the first picks.
-        album_holdoff = (SEED_ALBUM_OPENER_PENALTY ** (SEED_ALBUM_PENALTY_DECAY ** i)
+        # Penalize the opener's album so the queue doesn't just play one album, since technically it *is* the most similar
+        album_holdoff = (_relax(SEED_ALBUM_OPENER_PENALTY, 1.0 - SEED_ALBUM_PENALTY_DECAY ** i)
                          if preseed_album and SEED_ALBUM_OPENER_PENALTY < 1.0 else 1.0)
-
         scored = []
         for e in remaining:
             s = scorer.score(e)
@@ -902,8 +798,10 @@ def build_queue(seed_track_id: str, queue_length: int = 20,
                 pool.append(seed_best)
             weights = [s ** OPENER_WEIGHT_POWER for s, _ in pool]
         else:
-            floor = max(best * CONFIDENCE_RATIO, score_floor)
+            floor = max(best * CONFIDENCE_RATIO, ABSOLUTE_SCORE_FLOOR)
             pool = [(s, e) for s, e in scored if s >= floor]
+            if len(pool) > CONFIDENCE_POOL_MAX:
+                pool = heapq.nlargest(CONFIDENCE_POOL_MAX, pool, key=lambda c: c[0])
             if not pool:
                 # Best candidate is below the absolute floor: nothing left is a
                 # real match. Take it outright rather than reopening the relative

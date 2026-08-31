@@ -430,13 +430,18 @@ class PlaybackManager:
     # Playback control
     # -----------------------------------------------------------------------
 
-    def play_now(self, track_id, context_ids=None):
+    def play_now(self, track_id, context_ids=None, picked_by_radio=False):
         """Clears the queue, loads the context, and starts playing track_id.
 
         Always ends any active radio session (see start_radio) -- a plain
         "play this" replaces the queue outright, so a stale mix shouldn't
         keep topping itself up underneath the new context. start_radio calls
         this first and then sets its own seed immediately after.
+
+        ``picked_by_radio`` marks context_ids as algorithm picks rather than a
+        user-chosen context, for start_radio_from_reference's opening track --
+        session_context reads it back out to tell a real algorithm pick from a
+        manual add, independent of queue_type's own volatile/promoted state.
         """
         self._intentional_stop = False
         self._queue_ended = False
@@ -449,7 +454,8 @@ class PlaybackManager:
             if context_ids:
                 rows = []
                 for i, tid in enumerate(context_ids):
-                    rows.append({"track": tid, "queue_type": 1, "position": float(i)})
+                    rows.append({"track": tid, "queue_type": 1,
+                                "picked_by_radio": picked_by_radio, "position": float(i)})
                     if current_pos is None and tid == track_id:
                         current_pos = float(i)
                 # Batched insert instead of one INSERT per track -- a "play artist"
@@ -575,14 +581,14 @@ class PlaybackManager:
             return
 
         first_id, rest_ids = track_ids[0], track_ids[1:]
-        self.play_now(first_id, context_ids=[first_id])
+        self.play_now(first_id, context_ids=[first_id], picked_by_radio=True)
         self._persist_state(radio_seed_track=reference_track_id)
         self.current_state["radio_enabled"] = True
 
         if rest_ids:
             with db.atomic():
                 for i, tid in enumerate(rest_ids):
-                    QueueItem.create(track=tid, queue_type=2, position=1.0 + i)
+                    QueueItem.create(track=tid, queue_type=2, picked_by_radio=True, position=1.0 + i)
             self.queue_dirty = True
             self.prepare_next()
             self.broadcast_state()
@@ -681,7 +687,7 @@ class PlaybackManager:
         start_pos = (last_item.position + 1.0) if last_item else 0.0
         with db.atomic():
             for i, tid in enumerate(new_ids):
-                QueueItem.create(track=tid, queue_type=2, position=start_pos + i)
+                QueueItem.create(track=tid, queue_type=2, picked_by_radio=True, position=start_pos + i)
 
         self.queue_dirty = True
         self.prepare_next()

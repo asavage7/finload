@@ -3,7 +3,7 @@
 [![CI](https://github.com/asavage7/finload/actions/workflows/ci.yml/badge.svg)](https://github.com/asavage7/finload/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-Finload is a next-gen elegant Jellyfin/Local music client, with a custom discovery algorithm built to let you re-live your library.
+Finload is a unique Jellyfin/Local music client, with a custom discovery algorithm built to let you re-live your library.
 
 **Finload is currently in beta. Give it a shot! If you run into problems, feel free to [open an issue](https://github.com/asavage7/finload/issues).**
 
