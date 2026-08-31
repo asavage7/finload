@@ -46,6 +46,7 @@ WINDOW_SEGMENT_TARGET_S = 10.0  # segment length to analyze
 WINDOW_SEGMENTS_MIN = 6 # 6 x 10 = 60s
 WINDOW_SEGMENTS_MAX = 20 # Cap to avoid ridiculous processing time/memory usage on super long tracks (which aren't going to give good data anyway)
 WINDOW_SILENCE_TOP_DB = 40  # trim leading/trailing silence before budgeting/slicing
+STATS_BLOCK_S = WINDOW_SEGMENT_TARGET_S  # block length mfcc_std is measured within
 
 _DOWNLOAD_TIMEOUT = 30
 
@@ -239,7 +240,7 @@ def _decode_windowed(librosa, path: str):
 
     with sf.SoundFile(path) as f:
         native_sr = f.samplerate
-        segments = _plan_segments(f.duration)
+        segments = _plan_segments(f.frames / native_sr)
         if segments is None:
             return _read_resampled(f, librosa, native_sr), SR
         parts = []
@@ -247,6 +248,35 @@ def _decode_windowed(librosa, path: str):
             f.seek(int(start_s * native_sr))
             parts.append(_read_resampled(f, librosa, native_sr, int(seg_s * native_sr)))
         return np.concatenate(parts), SR
+
+def _refine_tempo(librosa, np, onset_env, sr: int, coarse_bpm: float) -> float:
+    """Continuous BPM from librosa's grid-quantized estimate."""
+    if coarse_bpm <= 0:
+        return 0.0
+    strength = librosa.feature.tempogram(onset_envelope=onset_env, sr=sr,
+                                         hop_length=HOP).mean(axis=1)
+    lag = int(round(60.0 * sr / (HOP * coarse_bpm)))
+    if not 1 <= lag < len(strength) - 1:
+        return coarse_bpm
+    prev, mid, nxt = strength[lag - 1], strength[lag], strength[lag + 1]
+    curvature = prev - 2.0 * mid + nxt
+    if curvature >= 0:  # not a peak (flat or a trough): keep the binned value
+        return coarse_bpm
+    # Vertex offset of the parabola through the three points, clamped to the bin.
+    offset = float(np.clip(0.5 * (prev - nxt) / curvature, -0.5, 0.5))
+    return 60.0 * sr / (HOP * (lag + offset))
+
+
+def _mfcc_stats(np, mfcc):
+    """Returns per-coefficient mean, and std measured within blocks."""
+    frames = mfcc.shape[1]
+    per_block = max(1, int(round(STATS_BLOCK_S * SR / HOP)))
+    n_blocks = max(1, int(round(frames / per_block)))
+    if n_blocks < 2:
+        return mfcc.mean(axis=1), mfcc.std(axis=1)
+    blocks = np.array_split(mfcc, n_blocks, axis=1)
+    return mfcc.mean(axis=1), np.mean([b.std(axis=1) for b in blocks], axis=0)
+
 
 def _analyze(path: str) -> dict:
     """Main analysis pipeline. Extracts features from audio using
@@ -275,13 +305,15 @@ def _analyze(path: str) -> dict:
     # aggregate=np.median matches beat_track's own non-default internal call.
     onset_env = librosa.onset.onset_strength(S=mel_db, sr=sr, hop_length=HOP, aggregate=np.median)
     tempo = librosa.feature.rhythm.tempo(onset_envelope=onset_env, sr=sr, hop_length=HOP)
+    bpm = _refine_tempo(librosa, np, onset_env, sr, float(np.atleast_1d(tempo)[0]))
 
     mfcc = librosa.feature.mfcc(S=mel_db, n_mfcc=N_MFCC)
     contrast = librosa.feature.spectral_contrast(S=stft_mag, sr=sr, n_fft=N_FFT, hop_length=HOP)
+    mfcc_mean, mfcc_std = _mfcc_stats(np, mfcc)
     return {
-        "bpm": float(np.atleast_1d(tempo)[0]),
-        "mfcc_mean": [float(x) for x in mfcc.mean(axis=1)],
-        "mfcc_std": [float(x) for x in mfcc.std(axis=1)],
+        "bpm": bpm,
+        "mfcc_mean": [float(x) for x in mfcc_mean],
+        "mfcc_std": [float(x) for x in mfcc_std],
         "contrast_mean": [float(x) for x in contrast.mean(axis=1)],
     }
 

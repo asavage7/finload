@@ -179,6 +179,7 @@ class QueueItem(BaseModel):
     track = ForeignKeyField(Track, backref='queue')
     position = FloatField(default=0.0) # allows midpoint insertion to avoid re-organizing the entire list
     queue_type = IntegerField(default=1)  # 0: next up, 1: queue, 2: autoplay
+    picked_by_radio = BooleanField(default=False) # Radio tracks automatically go from queue_type 2 > 1, need to distinguish
     added_at = DateTimeField(default=datetime.datetime.now)
 
     class Meta:

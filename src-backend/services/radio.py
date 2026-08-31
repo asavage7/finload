@@ -68,12 +68,19 @@ def session_context(current_position: float) -> tuple[list[str], dict[str, float
 
     track_ids are the last SESSION_CONTEXT_WINDOW queue items at or before
     current_position, oldest first. feedback maps track IDs to the completion
-    fraction (0-1) of their most recent play; tracks with no play record yet (the
-    currently playing one, say) are absent and count as full listens downstream.
+    fraction (0-1) of their most recent play; a track jumped straight past
+    without becoming current long enough to log anything is absent, not
+    defaulted -- there is no evidence it was even heard, so it should carry
+    neither a full listen's weight nor a skip's. The exception is whichever
+    track is current right now: it has no finished play record yet either, but
+    it gets the benefit of the doubt at 1.0 rather than being read as unheard.
     elapsed_ms is the completion-weighted listening time across the whole session
     (up to ELAPSED_SUM_LIMIT items), which the context window alone would
-    under-report. manual_ids marks which of track_ids the user queued by hand
-    (queue_type != 2)."""
+    under-report -- an absent track contributes none, rather than its full
+    nominal duration counting as time the user never actually spent on it.
+    manual_ids marks which of track_ids the user queued by hand -- picked_by_radio,
+    not queue_type, which _set_current promotes as a mix track plays and would
+    otherwise mislabel every already-played radio pick as manual."""
     items = list(QueueItem.select()
                  .where(QueueItem.position <= current_position)
                  .order_by(QueueItem.position.desc())
@@ -81,7 +88,7 @@ def session_context(current_position: float) -> tuple[list[str], dict[str, float
     ordered = list(reversed(items))
     all_ids = [i.track_id for i in ordered]
     ids = all_ids[-SESSION_CONTEXT_WINDOW:]
-    manual_ids = {i.track_id for i in ordered[-SESSION_CONTEXT_WINDOW:] if i.queue_type != 2}
+    manual_ids = {i.track_id for i in ordered[-SESSION_CONTEXT_WINDOW:] if not i.picked_by_radio}
 
     feedback: dict[str, float] = {}
     durations: dict[str, int] = {}
@@ -92,11 +99,12 @@ def session_context(current_position: float) -> tuple[list[str], dict[str, float
                 .order_by(PlayHistory.played_at))
         for row in rows:  # oldest first; the last write per track wins
             feedback[row.track_id] = row.completion_pct / 100.0
+        feedback.setdefault(ordered[-1].track_id, 1.0)
         durations = {t.id: t.duration_ms or 0
                      for t in Track.select(Track.id, Track.duration_ms)
                      .where(Track.id << all_ids)}
-    elapsed_ms = sum(durations.get(tid, 0) * min(max(feedback.get(tid, 1.0), 0.0), 1.0)
-                     for tid in all_ids)
+    elapsed_ms = sum(durations.get(tid, 0) * min(max(feedback[tid], 0.0), 1.0)
+                     for tid in all_ids if tid in feedback)
     return ids, feedback, elapsed_ms, manual_ids
 
 
