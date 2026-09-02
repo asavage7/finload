@@ -1,7 +1,10 @@
 """Settings routes and the Jellyfin connection test."""
+from typing import cast
+
 from fastapi import APIRouter, Body
 
 from core import state
+from providers.jellyfin import JellyfinProvider
 from providers.jellyfin import test_connection as test_jellyfin_connection_impl
 
 router = APIRouter()
@@ -41,7 +44,8 @@ def test_jellyfin_connection(data: dict = Body(...)):
 
 @router.get("/api/jellyfin/libraries")
 def get_jellyfin_libraries():
-    return state.provider.fetch_libraries()
+    # Jellyfin-only route; only reachable while onboarding with that source selected.
+    return cast(JellyfinProvider, state.provider).fetch_libraries()
 
 
 @router.post("/api/jellyfin/libraries/select")

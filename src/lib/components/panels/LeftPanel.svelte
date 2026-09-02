@@ -2,6 +2,7 @@
     import { tick, onDestroy } from "svelte";
     import { page } from "$app/stores";
     import { goto } from "$app/navigation";
+    import { openUrl } from "@tauri-apps/plugin-opener";
     import { leftPanelCondensed } from "$lib/store";
     import { getItemHref } from "$lib/utils/media";
     import { searchLibrary, type SearchResult } from "$lib/utils/search";
@@ -16,6 +17,8 @@
         IconLayoutSidebarLeftExpand,
         IconSettings,
         IconSettingsFilled,
+        IconHeart,
+        IconHeartFilled,
     } from "@tabler/icons-svelte";
     import IconButton from "$lib/components/ui/IconButton.svelte";
 
@@ -40,13 +43,24 @@
         activeIcon: any;
         // A spacer before the item pushes it (and everything after) to the bottom.
         bottom?: boolean;
+        // Opens via the OS browser instead of SvelteKit routing -- the app is a
+        // Tauri webview with no chrome, so navigating it to an external URL
+        // in-place would strand the user there with no way back.
+        external?: boolean;
     };
 
     const navItems: NavItem[] = [
         { label: "Home", href: "/", icon: IconHome, activeIcon: IconHomeFilled },
         { label: "Library", href: "/library", icon: IconLibrary, activeIcon: IconLibraryFilled },
-        { label: "Settings", href: "/settings", icon: IconSettings, activeIcon: IconSettingsFilled, bottom: true },
+        { label: "Support Finload", href: "https://github.com/asavage7/finload", icon: IconHeart, activeIcon: IconHeartFilled, bottom: true, external: true },
+        { label: "Settings", href: "/settings", icon: IconSettings, activeIcon: IconSettingsFilled },
     ];
+
+    function onNavClick(item: NavItem, event: MouseEvent) {
+        if (!item.external) return;
+        event.preventDefault();
+        void openUrl(item.href);
+    }
 
     $: condensed = $leftPanelCondensed;
     // Home only matches "/" exactly; everything else matches by prefix.
@@ -207,6 +221,7 @@
             <a
                 href={item.href}
                 title={item.label}
+                on:click={(e) => onNavClick(item, e)}
                 class="flex items-center {condensed
                     ? 'py-2'
                     : 'gap-3 py-1.5'} px-2 rounded-lg border text-sm transition {active
