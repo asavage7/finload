@@ -278,10 +278,7 @@
     saveSetting(setting.key, value);
   }
 
-  // Setup is where the library source is chosen, and changing it swaps both the
-  // provider and the database the app is running on. Restarting into setup means
-  // that happens on a freshly started app with nothing playing or cached, rather
-  // than being hot-swapped underneath a live player.
+  // Just re-run onboarding to avoid DB issues when switching library sources.
   async function rerunSetup() {
     const confirmed = await showConfirm({
       title: "Re-run setup?",

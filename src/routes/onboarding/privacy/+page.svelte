@@ -1,7 +1,6 @@
 <script lang="ts">
     import { goto } from "$app/navigation";
     import { apiUrl } from "$lib/backend";
-    import { onboardingComplete } from "$lib/store";
     import IconButton from "$lib/components/ui/IconButton.svelte";
     import { IconArrowRight, IconArrowBack } from "@tabler/icons-svelte";
 
@@ -72,21 +71,9 @@
         await fetch(apiUrl("/api/settings"), {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...values, onboarding_complete: true }),
+            body: JSON.stringify(values),
         });
-        // Start enrichment jobs if enabled.
-        const jobsToStart = [
-            values.enable_genre_enrichment && "genre_enrichment",
-            values.enable_online_metadata && "metadata",
-            values.enable_radio && "audio_features",
-        ].filter((name): name is string => !!name);
-        await Promise.all(
-            jobsToStart.map((name) =>
-                fetch(apiUrl(`/api/jobs/${name}/start`), { method: "POST" }),
-            ),
-        );
-        onboardingComplete.set(true);
-        goto("/library");
+        goto("/onboarding/sync");
     }
 </script>
 
@@ -150,7 +137,7 @@
             >
             <IconButton text white on:click={finish} disabled={submitting}>
                 <IconArrowRight size={16} />
-                Finish
+                Next
             </IconButton>
         </div>
     </div>

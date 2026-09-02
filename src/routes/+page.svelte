@@ -109,10 +109,10 @@
       <div class=" px-4 md:px-8 pt-10 max-w-[var(--10xl)] mx-auto">
         <div
           class="relative flex flex-col md:flex-row md:items-end gap-6 mb-10 p-4 shadow-xl border border-white/10 rounded-xl overflow-hidden"
-          style={`background-image: linear-gradient(to bottom, ${heroAccentColors[0]}60, ${heroAccentColors[2]}90 80%) `}
+          style={`background-image: linear-gradient(to bottom left, ${heroAccentColors[0]}60, ${heroAccentColors[2]} 80%) `}
         >
           {#if heroAlbum}
-            <div class="absolute inset-0 opacity-25 pointer-events-none">
+            <div class="absolute inset-0 opacity-10 pointer-events-none">
               <CoverImage
                 src={getImageUrl(heroAlbum.id, 240, "album")}
                 alt=""

@@ -28,7 +28,7 @@
 
 <header class="relative w-full flex items-end md:px-8 pt-8 pb-4 pt-18">
   {#if bgSrc}
-    <div class="absolute inset-0 opacity-20 pointer-events-none">
+    <div class="absolute inset-0 opacity-15 pointer-events-none">
       <CoverImage
         src={bgSrc}
         alt=""
