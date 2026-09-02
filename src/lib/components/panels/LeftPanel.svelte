@@ -43,10 +43,7 @@
         activeIcon: any;
         // A spacer before the item pushes it (and everything after) to the bottom.
         bottom?: boolean;
-        // Opens via the OS browser instead of SvelteKit routing -- the app is a
-        // Tauri webview with no chrome, so navigating it to an external URL
-        // in-place would strand the user there with no way back.
-        external?: boolean;
+        external?: boolean; // Open via the system browser rather than navigating in-app.
     };
 
     const navItems: NavItem[] = [
