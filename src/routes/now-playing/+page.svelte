@@ -14,12 +14,12 @@
   style="background-color: var(--player-accent-dark);"
 >
   <BackButton class="absolute top-4 left-4" />
-  <div class="absolute inset-0 w-full opacity-25 pointer-events-none z-0">
+  <div class="absolute inset-0 w-full opacity-20 pointer-events-none z-0">
     <CoverImage
       src={getImageUrl($playerState.current_track?.album_id || "default", 800)}
       alt=""
       showPlaceholder={false}
-      class="w-full h-full blur-3xl"
+      class="w-full h-full scale-135 blur-3xl animate-spin-bg"
     />
   </div>
   <div
@@ -59,7 +59,7 @@
   {#if $queuePanelActive}
     <div
       transition:slide={{ axis: "x", duration: 150, easing: cubicOut }}
-      class="flex h-full pb-16 w-1/2 max-w-2xl mx-auto justify-center overflow-hidden"
+      class="flex h-full pb-16 w-1/2 max-w-xl mx-auto justify-center overflow-hidden"
     >
       <RightPanel />
     </div>

@@ -12,7 +12,7 @@ import hashlib
 import logging
 import os
 import re
-from typing import Callable, Iterator, List, Optional, Set
+from typing import Iterator, List, Optional, Set
 
 import mutagen
 from mutagen.flac import Picture
