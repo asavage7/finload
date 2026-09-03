@@ -34,6 +34,8 @@
   {/if}
 
   {#if src && !failed}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <img
       {src}
       {alt}
@@ -43,6 +45,7 @@
       loading="lazy"
       decoding="async"
       class="absolute inset-0 w-full h-full object-cover transition-opacity duration-200 {loaded ? 'opacity-100' : 'opacity-0'}"
+      on:click
     />
   {/if}
 

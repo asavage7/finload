@@ -100,8 +100,7 @@
             <DetailHeader
                 typeLabel="ALBUM"
                 title={albumData.title}
-                bgSrc={getImageUrl(albumData.id, 240)}
-                imageSrc={getImageUrl(albumData.id, 240)}
+                id={albumData.id}
                 onPlay={() => playAlbum(albumId, false)}
                 onShuffle={() => playAlbum(albumId, true)}
                 menuItems={buildCollectionMenuItems(allTrackIds, { id: albumId, type: 'album' })}
