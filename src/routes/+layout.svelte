@@ -304,7 +304,7 @@
     {#if !hidesFooter}
       <div
         class="absolute bottom-4 z-1000 transition-[left,right] duration-150 ease-out max-w-[var(--8xl)] mx-auto"
-        style="left: calc(1rem + {footerLeft}); right: calc(1rem + {footerRight})"
+        style="left: calc(1rem + {isFullScreen ? '0px' : footerLeft}); right: calc(1rem + {isFullScreen ? '0px' : footerRight})"
       >
         <FooterPlayer />
       </div>

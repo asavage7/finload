@@ -291,11 +291,11 @@ class JellyfinProvider(MediaProvider):
         "EnableTotalRecordCount": "false",
     }
 
-    def fetch_all_ids(self, progress_callback: Callable[[int], None] | None = None) -> Set[str]:
+    def fetch_all_ids(self) -> Set[str]:
         self._id_to_library = {}
         return self._fetch_ids_scoped(dict(self._ID_SWEEP_QUERY))
 
-    def fetch_changed_ids(self, since: str, progress_callback: Callable[[int], None] | None = None) -> Set[str]:
+    def fetch_changed_ids(self, since: str) -> Set[str]:
         """IDs of tracks Jellyfin has saved (added or edited) since a given date."""
         # Reset here too, or the map grows across every incremental sync.
         self._id_to_library = {}

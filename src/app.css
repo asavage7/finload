@@ -14,6 +14,14 @@
 	--8xl: 90rem; /* 1440px */
 	--9xl: 100rem; /* 1600px */
 	--10xl: 110rem; /* 1760px */
+
+	--animate-spin-bg: spin 120s linear infinite;
+
+	@keyframes animate-spin-bg {
+		to {
+			transform: rotate(360deg);
+		}
+	}
 }
 
 :root {
@@ -46,4 +54,3 @@ samp {
 	font-variant-numeric: tabular-nums;
 	font-feature-settings: "tnum";
 }
-

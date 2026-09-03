@@ -39,9 +39,9 @@ logger = logging.getLogger(__name__)
 # Similarity scoring tunables.
 
 # These 3 must sum to 1, and automatically adjust when there's poor data on one or more.
-GENRE_WEIGHT = 0.25    
-TIMBRE_WEIGHT = 0.5   
-TEMPO_WEIGHT = 0.25    
+GENRE_WEIGHT = 0.5    
+TIMBRE_WEIGHT = 0.35   
+TEMPO_WEIGHT = 0.15    
 
 DSP_FULL_COVERAGE = 0.9         # Fraction of library analyzed where DSP is full strength. If below this, it's a % of the library analyzed.
 ARTIST_TAG_WEIGHT = 0.75        # Fraction of album tag weights to use for artist tags when creating a tag profile. Default is 0.75 (artist tags are 75% as important as album tags).
