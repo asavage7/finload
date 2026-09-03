@@ -524,8 +524,8 @@ class AudioFeatureManager(BackgroundJob):
         self._settings = settings
         self.db = db_manager
         self._get_provider = provider_getter
-        # Set when settings are changed mid-pass, not super reliable
-        self._restart_requested = threading.Event()
+        # Set by _on_setting_changed, consumed once the current pass stops
+        self._pending_restart = False
         settings.add_listener(self._on_setting_changed)
 
     def start(self, force: bool = False) -> bool:
@@ -535,7 +535,8 @@ class AudioFeatureManager(BackgroundJob):
 
     def _on_setting_changed(self, key, value):
         if key in ("analysis_worker_count", "analysis_worker_usage") and self.is_running:
-            self._restart_requested.set()
+            self._pending_restart = True
+            self.stop()
 
     def ensure_features(self, track_ids) -> set[str]:
         """Foreground analysis for tracks radio needs right now."""
@@ -545,38 +546,40 @@ class AudioFeatureManager(BackgroundJob):
 
     def _run(self, force: bool = False) -> None:
         provider = self._get_provider()
-        self._restart_requested.clear()
-        _purge_temp_audio()
-        # Only the first pass honors force=True
-        pass_force = force
-        analyzed = failed = 0
 
         while True:
-            tracks = self._pending_tracks(pass_force)
+            _purge_temp_audio()
+            tracks = self._pending_tracks(force)
             self._emit(total=len(tracks), message="Preparing audio analysis...")
             if not tracks:
-                break
+                self._emit(status="complete", message="All tracks already analyzed!")
+                return
 
-            processed, errors, restarted = self._analyze_batch(tracks, provider)
-            analyzed += processed - errors
-            failed += errors
+            processed, errors, outcome = self._analyze_batch(tracks, provider)
+            if outcome == "disabled":
+                return
+            if outcome == "stopped":
+                if self._pending_restart:
+                    self._pending_restart = False
+                    self._stop_event.clear()
+                    self._emit(status="running", message="Restarting with new settings...",
+                               processed=0, total=0)
+                    force = False
+                    continue
+                self._emit(status="idle", message="Stopped")
+                return
 
-            if not self._settings.get("enable_radio"):
-                return  # _analyze_batch already emitted the "Stopped" status.
-            if not restarted:
-                break
-            pass_force = False
+            analyzed = processed - errors
+            if not analyzed:
+                self._emit(status="complete", message="All tracks already analyzed!")
+                return
 
-        if not analyzed:
-            self._emit(status="complete", message="All tracks already analyzed!")
+            self._emit(message="Computing hubness stats...")
+            compute_hubness_stats(self.db)
+            self._emit(status="complete",
+                       message=f"Analyzed {analyzed} tracks"
+                               + (f", {errors} failed." if errors else "."))
             return
-
-        self._emit(message="Computing hubness stats...")
-        compute_hubness_stats(self.db)
-
-        self._emit(status="complete",
-                   message=f"Analyzed {analyzed} tracks"
-                           + (f", {failed} failed." if failed else "."))
 
     def _pending_tracks(self, force: bool) -> list[Track]:
         """Returns a list of tracks that need analysis. If force=True, returns all tracks."""
@@ -588,50 +591,47 @@ class AudioFeatureManager(BackgroundJob):
             query = query.where(Track.id.not_in(current))
         return list(query)
 
-    def _analyze_batch(self, tracks: list[Track], provider) -> tuple[int, int, bool]:
+    def _analyze_batch(self, tracks: list[Track], provider) -> tuple[int, int, str]:
         """Runs one pool pass over the list of tracks."""
         n_workers = self._configured_worker_count()
         cpu_fraction = self._configured_cpu_fraction()
         temp_paths: dict[str, str] = {}
         processed = 0
         errors = 0
-        restarted = False
+        outcome = "done"
         stop = threading.Event()
+        gate = threading.Semaphore(n_workers)
 
         try:
             with _POOL_CONTEXT.Pool(n_workers, initializer=_worker_init,
                                     initargs=(cpu_fraction,)) as pool:
-                try:
-                    for track_id, features, error in pool.imap_unordered(
-                        _analyze_one,
-                        self._resolve_paths(tracks, provider, temp_paths, stop),
-                    ):
+                for track_id, features, error in pool.imap_unordered(
+                    _analyze_one,
+                    self._resolve_paths(tracks, provider, temp_paths, stop, gate),
+                ):
+                    gate.release()
+                    temp_path = temp_paths.pop(track_id, None)
+                    if temp_path:
+                        try:
+                            os.remove(temp_path)
+                        except OSError:
+                            pass
+                    processed += 1
+                    if error:
+                        errors += 1
+                    else:
+                        self.db.save_track_features(track_id, **features)
+                    self._emit(processed=processed,
+                               message=f"Analyzing audio: {processed}/{len(tracks)}"
+                                       + (f" ({errors} failed)" if errors else ""))
+
+                    if outcome == "done":
                         if not self._settings.get("enable_radio"):
-                            self._emit(status="idle",
-                                       message="Stopped. Disabled in settings.")
-                            return processed, errors, False
-                        if self._restart_requested.is_set():
-                            self._restart_requested.clear()
-                            restarted = True
-                            break
-                        # Pausing here stops new analysis and DB writes
-                        self.wait_if_paused()
-                        temp_path = temp_paths.pop(track_id, None)
-                        if temp_path:
-                            try:
-                                os.remove(temp_path)
-                            except OSError:
-                                pass
-                        processed += 1
-                        if error:
-                            errors += 1
-                        else:
-                            self.db.save_track_features(track_id, **features)
-                        self._emit(processed=processed,
-                                   message=f"Analyzing audio: {processed}/{len(tracks)}"
-                                           + (f" ({errors} failed)" if errors else ""))
-                finally:
-                    stop.set()
+                            outcome = "disabled"
+                            stop.set()
+                        elif self.should_stop():
+                            outcome = "stopped"
+                            stop.set()
         finally:
             # Clean up leftover temp files on sudden restart or error
             for leftover in temp_paths.values():
@@ -641,7 +641,9 @@ class AudioFeatureManager(BackgroundJob):
                     pass
             temp_paths.clear()
 
-        return processed, errors, restarted
+        if outcome == "disabled":
+            self._emit(status="idle", message="Stopped. Disabled in settings.")
+        return processed, errors, outcome
 
     def _configured_worker_count(self) -> int:
         configured = int(self._settings.get("analysis_worker_count") or 4)
@@ -651,37 +653,30 @@ class AudioFeatureManager(BackgroundJob):
         pct = float(self._settings.get("analysis_worker_usage") or 25)
         return min(max(pct, 1.0), 100.0) / 100.0
 
-    def _wait_while_paused(self, stop: threading.Event) -> None:
-        """Like wait_if_paused, but also returns once stop is set."""
-        while not self._pause_event.is_set() and not stop.is_set():
-            self._pause_event.wait(0.5)
-
     def _resolve_paths(self, tracks: list[Track], provider, temp_paths: dict[str, str],
-                       stop: threading.Event):
+                       stop: threading.Event, gate: threading.Semaphore):
         """Yields (track_id, local_path) for the pool."""
         local, remote = [], []
         for track in tracks:
             (local if track.provider == "local" and track.file_path else remote).append(track)
 
         for track in local:
-            self._wait_while_paused(stop)
-            if stop.is_set():
+            if stop.is_set() or self.should_stop():
                 return
+            gate.acquire()
             yield track.id, track.file_path
 
         if not remote:
             return
-        yield from self._resolve_remote(remote, provider, temp_paths, stop, DOWNLOAD_CONCURRENCY)
+        yield from self._resolve_remote(remote, provider, temp_paths, stop, DOWNLOAD_CONCURRENCY, gate)
 
     def _resolve_remote(self, remote: list[Track], provider, temp_paths: dict[str, str],
-                        stop: threading.Event, concurrency: int):
-        """Downloads a remote track and yields its ID and local path. Supports concurrency and pausing."""
+                        stop: threading.Event, concurrency: int, gate: threading.Semaphore):
+        """Downloads a remote track and yields its ID and local path. Supports concurrency."""
         it = iter(remote)
 
         def submit_next(pool):
-            # Stop feeding while a sync holds this job paused
-            self._wait_while_paused(stop)
-            if stop.is_set():
+            if stop.is_set() or self.should_stop():
                 return None
             track = next(it, None)
             return (pool.submit(_download_track, track, provider), track) if track else None
@@ -703,10 +698,11 @@ class AudioFeatureManager(BackgroundJob):
                 else:
                     # Recorded before the stop check so an abandoned pass still cleans this file up
                     temp_paths[track.id] = local_path
-                    if stop.is_set():
+                    if stop.is_set() or self.should_stop():
                         return
+                    gate.acquire()
                     yield track.id, local_path
-                if stop.is_set():
+                if stop.is_set() or self.should_stop():
                     return
                 item = submit_next(pool)
                 if item is not None:

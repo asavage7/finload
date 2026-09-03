@@ -7,6 +7,8 @@ Finload is a unique Jellyfin/Local music client, with a custom discovery algorit
 
 **Finload is currently in beta. Give it a shot! If you run into problems, feel free to [open an issue](https://github.com/asavage7/finload/issues).**
 
+Current known issues can be found in [ISSUES.md](ISSUES.md).
+
 
 ## Screenshots
 

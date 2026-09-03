@@ -68,17 +68,14 @@ class SyncManager(BackgroundJob):
             self._emit(status="error", message="Library source is not configured")
             return
 
-        # Sync gets priority: the follow-up jobs hit the same server and the
-        # same SQLite file, so let it run alone rather than piling on load. The
-        # finally guarantees resume() even if this raises, so a failed sync can
-        # never leave them paused forever.
+        # Sync gets priority over any other jobs, so stop them while it runs and start when finished.
         for job in self.follow_up_jobs:
-            job.pause()
+            job.stop()
         try:
             self._sync(provider, force)
         finally:
             for job in self.follow_up_jobs:
-                job.resume()
+                job.start(force=False)
 
     def _sync(self, provider, force: bool):
         # Captured before any request goes out, so a track saved mid-sync is
@@ -143,11 +140,6 @@ class SyncManager(BackgroundJob):
         self._emit(status="complete", processed=processed, added=len(new_ids),
                    updated=len(changed_ids),
                    message=f"Added {len(new_ids)}, updated {len(changed_ids)}, removed {len(stale_ids)}")
-
-        # Started while still paused (each blocks at its first wait_if_paused)
-        # so they don't begin real work before _run's finally resumes them.
-        for job in self.follow_up_jobs:
-            job.start(force=False)
 
     def _fetch_and_store(self, provider, ids_to_fetch) -> int:
         """Stream normalized items from the provider into the DB, flushing every

@@ -23,6 +23,7 @@
   import {
     subscribeJobStatus,
     startJob,
+    stopJob,
     type JobInfo,
     type JobState,
   } from "$lib/utils/backgroundJobs";
@@ -88,7 +89,17 @@
   let sectionRefs: Record<string, HTMLElement> = {};
   let activeSectionId = "";
 
+  // Anything stopping but not yet stopped
+  let stoppingJobs = new Set<string>();
+
   function setJobState(name: string, state: JobState) {
+    if (stoppingJobs.has(name)) {
+      if (state.status === "running") {
+        state = { ...state, message: "Stopping..." };
+      } else {
+        stoppingJobs = new Set([...stoppingJobs].filter((n) => n !== name));
+      }
+    }
     jobs = jobs.map((job) => (job.name === name ? { ...job, state } : job));
   }
 
@@ -105,14 +116,20 @@
     setting: SettingDef,
     backendJob: JobInfo,
     currentValues: Record<string, unknown>,
+    syncRunning: boolean,
   ): TaskDisplay {
-    const enabled =
+    const settingEnabled =
       !setting.enabledIf || currentValues[setting.enabledIf.key] === setting.enabledIf.value;
+    const blockedBySync = syncRunning && backendJob.name !== "sync";
     return {
       label: setting.label ?? backendJob.name,
       description: setting.description ?? "",
-      enabled,
-      disabled_reason: enabled ? null : (setting.disabledReason ?? null),
+      enabled: settingEnabled && !blockedBySync,
+      disabled_reason: !settingEnabled
+        ? (setting.disabledReason ?? null)
+        : blockedBySync
+          ? "Waiting for library sync to finish..."
+          : null,
       supports_force: backendJob.supports_force,
       state: backendJob.state,
     };
@@ -149,6 +166,18 @@
       if (!ok) return;
     }
     await beginJob(name, task.state, force);
+  }
+
+  async function stopRunningJob(name: string, task: TaskDisplay) {
+    if (task.state.status !== "running") return;
+    stoppingJobs = new Set(stoppingJobs).add(name);
+    setJobState(name, { ...task.state, message: "Stopping..." });
+    try {
+      await stopJob(name);
+    } catch {
+      stoppingJobs = new Set([...stoppingJobs].filter((n) => n !== name));
+      setJobState(name, { ...task.state, status: "error", message: "Could not reach backend" });
+    }
   }
 
   async function loadJobs() {
@@ -203,6 +232,8 @@
     }
     return boxes;
   }
+
+  $: syncRunning = jobs.find((j) => j.name === "sync")?.state.status === "running";
 
   // Recomputed whenever settings values or job-load state change
   $: renderedSections = schema.sections
@@ -452,11 +483,12 @@
                       {#if setting.control === "task"}
                         {@const backendJob = jobs.find((j) => j.name === setting.job)}
                         {#if backendJob}
-                          {@const task = buildTask(setting, backendJob, values)}
+                          {@const task = buildTask(setting, backendJob, values, syncRunning)}
                           <div class="px-4 py-3">
                             <JobCard
                               job={task}
                               onRun={(force) => runJob(setting.job ?? "", task, force)}
+                              onStop={() => stopRunningJob(setting.job ?? "", task)}
                             />
                           </div>
                         {/if}

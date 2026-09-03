@@ -38,6 +38,12 @@ def start_job(name: str, force: bool = Body(False, embed=True)):
     started = _start(job, name, force)
     return {"started": started, "status": job.state["status"]}
 
+@router.post("/api/jobs/{name}/stop")
+def stop_job(name: str):
+    job = _get_job(name)
+    job.stop()
+    return {"status": job.state["status"]}
+
 
 @router.websocket("/ws/jobs/{name}")
 async def job_ws(websocket: WebSocket, name: str):
@@ -54,7 +60,7 @@ async def job_ws(websocket: WebSocket, name: str):
 
     job.add_listener(on_update)
     try:
-        # The socket is push-only; receiving is just how a disconnect surfaces.
+        # The socket is push-only but disconnects are sent by the client
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

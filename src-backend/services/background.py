@@ -1,39 +1,27 @@
-"""Shared base for long-running background jobs (sync, enrichment, ...).
+"""Shared base class for background jobs.
 
-Every job in this app follows the same shape: run once in a background
-thread, track idle/running/complete/error progress, and let any number of
-listeners (a websocket handler, typically) observe that progress live.
-Subclasses implement only ``_run(self, *args, **kwargs)`` and call
-``self._emit(...)`` to report progress; everything else (thread spawning,
-re-entrancy guarding, exception handling, listener broadcasting) lives here
-once instead of being copy-pasted per job.
+A job in finload is an asynchronous task that runs in a background thread.
+All jobs track their own progress and can be observed live via a websocket.
 """
 import logging
 import threading
+from time import monotonic
 
 logger = logging.getLogger(__name__)
 
 
 class BackgroundJob:
-    # Extra state keys a subclass wants in its progress dict beyond the
-    # common status/message/processed/total (e.g. SyncManager's "added").
-    EXTRA_STATE: dict = {}
-
-    # Whether this job's start() accepts a force flag to widen its unit of
-    # work (re-process everything, not just what's unprocessed). Exposed via
-    # /api/jobs so the frontend knows whether to offer a "re-run all" action.
-    supports_force: bool = False
+    EXTRA_STATE: dict = {} # Any extra information to include in the job's state dict, beyond the standard totals
+    supports_force: bool = False # Can the job be forced to re-run for every track?
 
     def __init__(self):
         self.listeners = []
         self._lock = threading.Lock()
-        # Set = free to run, cleared = paused. Lets one job (sync) tell
-        # others to idle rather than run concurrently with it -- see
-        # pause()/resume()/wait_if_paused().
-        self._pause_event = threading.Event()
-        self._pause_event.set()
+        self._stop_event = threading.Event() # Allows the job to be stopped
+        self.run_started_at: float | None = None
         self.state = {
             "status": "idle",   # idle | running | complete | error
+            "eta_seconds": None,  # Estimated time remaining for the job to complete
             "message": "",
             "processed": 0,
             "total": 0,
@@ -44,25 +32,13 @@ class BackgroundJob:
     def is_running(self) -> bool:
         return self.state["status"] == "running"
 
-    # --- cooperative pause -------------------------------------------------
-    # No hard cancellation exists for a running job (see _run_wrapper) -- this
-    # is a softer "yield to someone with priority" signal a long-running job
-    # opts into by calling wait_if_paused() between work items, so a pause
-    # only ever lands at a clean item boundary rather than mid-item.
-    def pause(self):
-        self._pause_event.clear()
+    def stop(self):
+        self._stop_event.set()
 
-    def resume(self):
-        self._pause_event.set()
+    def should_stop(self) -> bool:
+        return self._stop_event.is_set()
 
-    def wait_if_paused(self):
-        """Call between work items in a long-running _run loop. Blocks here
-        for as long as another job holds this one paused."""
-        if not self._pause_event.is_set():
-            self._emit(message="Paused for library sync...")
-            self._pause_event.wait()
-
-    # --- listeners -----------------------------------------------------
+    # listener management and state broadcasting
     def add_listener(self, callback):
         self.listeners.append(callback)
         callback(dict(self.state))  # new subscriber renders the current state immediately
@@ -73,23 +49,32 @@ class BackgroundJob:
 
     def _emit(self, **changes):
         self.state.update(changes)
+        if "processed" in changes or "total" in changes:
+            # Update ETA if we have enough information to do so
+            processed = self.state.get("processed")
+            total = self.state.get("total")
+            if processed is not None and total:
+                elapsed = monotonic() - (self.run_started_at or 0)
+                if processed > 0 and elapsed > 0:
+                    eta_seconds = int(elapsed * (total - processed) / processed)
+                    self.state["eta_seconds"] = eta_seconds
         snapshot = dict(self.state)
-        # Snapshot the list: a websocket disconnecting can remove_listener from
-        # another thread mid-broadcast, which would break the iteration itself.
         for listener in list(self.listeners):
             try:
                 listener(snapshot)
             except Exception:
                 pass
 
-    # --- control ---------------------------------------------------------
+    # job lifecycle
     def start(self, *args, **kwargs) -> bool:
-        """Kick off ``_run`` in a background thread. False if already running."""
+        """Start the job in a background thread. Returns False if already running."""
         with self._lock:
             if self.is_running:
                 return False
+            self.run_started_at = monotonic()
+            self._stop_event.clear()
             self.state.update(status="running", message="Starting...",
-                              processed=0, total=0, **self.EXTRA_STATE)
+                              processed=0, total=0, eta_seconds=None, **self.EXTRA_STATE)
         threading.Thread(target=self._run_wrapper, args=args, kwargs=kwargs, daemon=True).start()
         return True
 
