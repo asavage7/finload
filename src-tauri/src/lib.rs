@@ -245,7 +245,7 @@ pub fn run() {
             let hwnd: Option<*mut c_void> = {
                 #[cfg(target_os = "windows")]
                 {
-                    Some(window.hwnd().expect("failed to get window hwnd").0 as *mut c_void)
+                    Some(window.hwnd().expect("failed to get window hwnd").0)
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
