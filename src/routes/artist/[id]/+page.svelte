@@ -8,7 +8,6 @@
     import MediaCard from "$lib/components/MediaCard.svelte";
     import Loading from "$lib/components/Loading.svelte";
     import EmptyState from "$lib/components/EmptyState.svelte";
-    import CoverImage from "$lib/components/CoverImage.svelte";
     import BackButton from "$lib/components/ui/BackButton.svelte";
     import {
         IconMicrophoneFilled,
@@ -104,8 +103,7 @@
             <DetailHeader
                 typeLabel="ARTIST"
                 title={artistData.name}
-                bgSrc={getImageUrl(artistData.id, 240)}
-                imageSrc={getImageUrl(artistData.id, 240)}
+                id={artistData.id}
                 onPlay={() => playArtist(artistId, false)}
                 onShuffle={() => playArtist(artistId, true)}
                 menuItems={buildCollectionMenuItems(artistData.track_ids, { id: artistId, type: 'artist' })}

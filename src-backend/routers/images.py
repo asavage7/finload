@@ -55,22 +55,40 @@ def _art_candidates(item_id: str, type: str) -> list[str]:
 
 
 def resolve_image_path(item_id: str, size: int, type: str = "album") -> str | None:
-    """Return a local file path for an item's art, downloading it on a cache miss."""
     size = min(size, MAX_IMAGE_SIZE)
-    for candidate in _art_candidates(item_id, type):
+    candidates = _art_candidates(item_id, type)
+
+    # 1. Try to find cached image at correct size for all candidates
+    for candidate in candidates:
         path = state.provider.get_cached_image_path(candidate, size)
-        if os.path.exists(path):
+        if path is not None and os.path.exists(path):
             return path
-        with _lock_for(path):
-            if os.path.exists(path):  # another request already filled it in while we waited
+
+    # 2. Try to download image at correct size
+    for candidate in candidates:
+        with _lock_for(f"{candidate}_{size}"):
+            # Double-check cache in case another thread downloaded it
+            path = state.provider.get_cached_image_path(candidate, size)
+            if path is not None and os.path.exists(path): 
                 return path
+            
             if state.provider.download_image_to_cache(candidate, size):
-                return path
+                path = state.provider.get_cached_image_path(candidate, size)
+                if path is not None and os.path.exists(path):
+                    return path
+
+    # 3. Find the closest size image
+    for candidate in candidates:
+        path = state.provider.get_closest_image_path(candidate, size)
+        if path is not None:
+            return path
+
     return None
 
 
 @router.get("/api/image/{item_id}")
 def get_image(item_id: str, size: int = 240, type: str = "album"):
+    type = type.lower()
     if type == "playlist":
         image_path = playlist_image_path(item_id)
         if os.path.exists(image_path):

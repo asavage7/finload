@@ -30,13 +30,8 @@ def get_cache_dir() -> str:
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
 
-
 def cached_image_path(item_id: str, size_px: int = 0) -> str:
-    """Cache path for an item's primary image at a given width.
-
-    The layout is shared by every provider and by metadata enrichment; only the
-    download of an image is source-specific.
-    """
+    """Cache path for an item's primary image at a given width."""
     suffix = str(size_px) if size_px > 0 else "original"
     return os.path.join(get_cache_dir(), f"{item_id}_{suffix}.jpg")
 
@@ -127,9 +122,25 @@ class MediaProvider(ABC):
         return False
 
     # Images
-    def get_cached_image_path(self, item_id: str, size_px: int = 0) -> str:
+    def get_cached_image_path(self, item_id: str, size_px: int = 0) -> str | None:
         return cached_image_path(item_id, size_px)
 
+    def get_closest_image_path(self, item_id: str, size_px: int = 0) -> str | None:
+        """Return the path to the closest cached image size for an item, or None if none exist."""
+        original_path = os.path.join(get_cache_dir(), f"{item_id}_original.jpg")
+        if os.path.exists(original_path):
+            return original_path
+        cached_sizes = []
+        for filename in os.listdir(get_cache_dir()):
+            if filename.startswith(f"{item_id}_") and filename.endswith(".jpg"):
+                size_str = filename[len(item_id) + 1:-4]
+                if size_str.isdigit():
+                    cached_sizes.append(int(size_str))
+        if cached_sizes:
+            nearest_size = min(cached_sizes, key=lambda s: abs(s - size_px))
+            return os.path.join(get_cache_dir(), f"{item_id}_{nearest_size}.jpg")
+        return None
+    
     @abstractmethod
     def download_image_to_cache(self, item_id: str, size_px: int = 0) -> bool:
         """Fetch an item's primary image into the cache. Returns True on success."""

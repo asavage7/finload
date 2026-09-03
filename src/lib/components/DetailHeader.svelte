@@ -3,6 +3,7 @@
   import IconButton from "$lib/components/ui/IconButton.svelte";
   import ContextMenu from "$lib/components/ContextMenu.svelte";
   import CoverImage from "$lib/components/CoverImage.svelte";
+  import { getImageUrl } from "$lib/utils/media";
   import {
     IconPlayerPlayFilled,
     IconArrowsShuffle,
@@ -11,12 +12,13 @@
 
   export let typeLabel: string;
   export let title: string;
-  export let imageSrc: string = "";
-  export let bgSrc: string = "";
+  export let id: string;
   export let onPlay: () => void;
   export let onShuffle: () => void;
   export let menuItems: any[] = [];
   export let primaryAction: "play" | "shuffle" = "play";
+
+  let imageModalOpen = false;
 
   $: play = { onClick: onPlay, icon: IconPlayerPlayFilled, label: "Play" };
   $: shuffle = {
@@ -28,10 +30,10 @@
 </script>
 
 <header class="relative w-full flex items-end md:px-8 pt-8 pb-4 pt-18">
-  {#if bgSrc}
+  {#if id}
     <div class="absolute inset-0 opacity-15 pointer-events-none">
       <CoverImage
-        src={bgSrc}
+        src={getImageUrl(id, 240, typeLabel)}
         alt=""
         showPlaceholder={false}
         class="w-full h-full blur-3xl"
@@ -44,16 +46,20 @@
   <div
     class="relative z-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-full max-w-[var(--8xl)] mx-auto pb-8 md:pr-6 border-b border-white/10"
   >
-    {#if imageSrc}
+    {#if id}
       <div class="w-32 md:w-48 lg:w-56">
         <CoverImage
-          src={imageSrc}
+          src={getImageUrl(id, 240, typeLabel)}
           alt="Image of {title}"
           showPlaceholder={false}
-          class="w-full aspect-square cursor-pointer {typeLabel === 'ARTIST' ? 'rounded-full' : 'rounded-xl'}"
+          class="w-full aspect-square cursor-pointer {typeLabel === 'ARTIST'
+            ? 'rounded-full'
+            : 'rounded-xl'}"
+          on:click={() => (imageModalOpen = true)}
         />
       </div>
-    {:else if $$slots.cover} // Still needed by playlist page, hoping to remove in the future
+    {:else if $$slots.cover}
+      // Still needed by playlist page, hoping to remove in the future
       <div class="w-full px-8 md:w-auto md:p-0">
         <slot name="cover" />
       </div>
@@ -105,3 +111,35 @@
     </div>
   </div>
 </header>
+{#if imageModalOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+    on:click={() => (imageModalOpen = false)}
+  >
+    <div
+      class="bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl p-4 mx-4 flex flex-col"
+      style="max-width: 95vw; max-height: calc(100vh - 2rem); overflow-y: auto"
+      on:click|stopPropagation
+    >
+      <div
+        class="mx-auto shrink-0"
+        style="width: min(80vw, 70vh); aspect-ratio: 1 / 1"
+      >
+        <CoverImage
+          src={getImageUrl(id, 2000, typeLabel)}
+          alt="Image of {title}"
+          showPlaceholder={false}
+          class="w-full h-full object-contain rounded-xl"
+        />
+      </div>
+      <button
+        on:click={() => (imageModalOpen = false)}
+        class="mt-5 self-end px-4 py-2 rounded-full text-sm font-semibold text-zinc-400 hover:text-white hover:bg-white/10 transition border border-white/10"
+      >
+        Close
+      </button>
+    </div>
+  </div>
+{/if}
