@@ -1,25 +1,12 @@
-"""Library sync orchestration.
+"""Library sync orchestration for all libraries."""
 
-Provider-agnostic: drives any MediaProvider through fetch_all_ids /
-fetch_changed_ids / fetch_items_by_ids, normalizes what comes back, and writes
-it to the DB in bulk. Progress is broadcast via BackgroundJob.
-
-Two modes. Quick path: ask the provider what changed since the last checkpoint
-and fetch only that -- cheap, but it can't see removals. Full path: sweep every
-id; used on the first sync and whenever force=True, and it's the only path that
-reconciles removals or re-fetches every known track.
-"""
 from datetime import datetime, timezone
 
 from core.database import Track, track_scope_clause
 from services.background import BackgroundJob
 
-# library_source values that get their own incremental-sync checkpoint (see
-# settings_manager.py's last_synced_at_<source> defaults).
 _CHECKPOINT_SOURCES = ("jellyfin", "local")
 
-# Items accumulated before a write. Bounds peak memory on a large library and
-# means a mid-sync failure keeps everything already flushed.
 _FLUSH_EVERY = 2000
 
 
@@ -84,9 +71,6 @@ class SyncManager(BackgroundJob):
         checkpoint_key = self._checkpoint_key()
         since = None if force else (self.settings.get(checkpoint_key) if checkpoint_key else None)
 
-        # Diffing against the target (not applied) scope is what keeps a
-        # narrowing selection safe: a deselected track is absent from both
-        # sides, so it is never mistaken for one deleted on the server.
         pending_library_ids = self.settings.get("jellyfin_library_ids_pending")
         local_query = Track.select(Track.id)
         scope = track_scope_clause(self._sync_library_ids())
@@ -94,41 +78,29 @@ class SyncManager(BackgroundJob):
             local_query = local_query.where(scope)
         local_ids = set(local_query.scalars())
 
-        # None means the provider can't report changes at all (the local
-        # provider never can), so fall back to the full sweep.
         reported = provider.fetch_changed_ids(since) if since else None
         full_sweep = reported is None
 
         if full_sweep:
-            self._emit(status="running", message="Comparing with server...")
             server_ids = provider.fetch_all_ids()
             stale_ids = local_ids - server_ids
             new_ids = server_ids - local_ids
-            # A forced full re-sync also re-fetches every already-known track.
             changed_ids = (server_ids & local_ids) if force else set()
         else:
-            self._emit(status="running", message="Checking for changes...")
             new_ids = reported - local_ids
             changed_ids = reported & local_ids
             stale_ids = set()
 
         ids_to_fetch = new_ids | changed_ids
-        self._emit(total=len(ids_to_fetch), removed=len(stale_ids), updated=len(changed_ids),
+        self._emit(total=len(ids_to_fetch), processed=0, added=len(new_ids), removed=len(stale_ids), updated=len(changed_ids),
                    message="Syncing library...")
 
         if stale_ids:
             self.db.delete_tracks(stale_ids)
 
         processed = self._fetch_and_store(provider, ids_to_fetch)
+        self.db.prune_orphans() # Remove empty albums/artists/genres after the track deletions and upserts.
 
-        # Removing tracks strands the albums/artists they belonged to, and older
-        # libraries may already carry such orphans. Prune every sync.
-        self.db.prune_orphans()
-
-        # Promote the pending selection now that the data it needs is in place,
-        # atomically with that data becoming visible. Only after a full sweep:
-        # the quick path only ever backfills library_id for changed tracks, so
-        # promoting there would hide every track it didn't touch.
         if (full_sweep and pending_library_ids is not None
                 and self.settings.get("library_source") == "jellyfin"):
             self.settings.set({"jellyfin_library_ids": pending_library_ids,
@@ -148,6 +120,8 @@ class SyncManager(BackgroundJob):
         artist_ids_by_name = self.db.artist_ids_by_name()
         artists, albums, tracks, album_genres = {}, {}, [], set()
         processed = 0
+        
+        total_to_fetch = len(ids_to_fetch)
 
         def flush():
             if tracks:
@@ -178,8 +152,12 @@ class SyncManager(BackgroundJob):
                 album_genres.add((album_data["id"], name, album_data["provider"], 0))
 
             processed += 1
-            if processed % 100 == 0:
-                self._emit(processed=processed)
+            if processed % 10 == 0:
+                self._emit(
+                    processed=processed, 
+                    message=f"Syncing library... {processed} of {total_to_fetch} items"
+                )
+                
             if len(tracks) >= _FLUSH_EVERY:
                 flush()
 

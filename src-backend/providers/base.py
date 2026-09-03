@@ -15,7 +15,7 @@ Normalized item schema:
 See database.py for more information on what each field means.
 """
 from abc import ABC, abstractmethod
-from typing import Iterator, List, Optional, Set
+from typing import Callable, Iterator, List, Optional, Set
 import io
 import os
 import threading

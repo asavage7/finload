@@ -131,7 +131,7 @@
           src={getImageUrl(id, 2000, typeLabel)}
           alt="Image of {title}"
           showPlaceholder={false}
-          class="w-full h-full object-contain rounded-xl"
+          class="w-full h-full object-contain rounded-lg"
         />
       </div>
       <button

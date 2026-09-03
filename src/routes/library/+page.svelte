@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
+  import { page } from "$app/stores";
   import { fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import { get } from "svelte/store";
@@ -430,7 +431,12 @@
   let showCreationModal = false;
 
   onMount(() => {
-    loadData(activeTab).then(() => restoreScrollPosition(activeTab));
+    const refresh = $page.url.searchParams.has('refresh');
+    if (refresh) {
+      loadData(activeTab, true);
+    } else {
+      loadData(activeTab).then(() => restoreScrollPosition(activeTab));
+    }
   });
 
   onDestroy(() => {
