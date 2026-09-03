@@ -101,7 +101,7 @@
             <DetailHeader
                 typeLabel="PLAYLIST"
                 title={playlistData.name}
-                bgSrc={headerBgSrc}
+                id={playlistData.id}
                 onPlay={() => playPlaylist(playlistData.id, false)}
                 onShuffle={() => playPlaylist(playlistId, true)}
                 menuItems={buildPlaylistMenuItems(playlistId, playlistData.name)}

@@ -12,7 +12,7 @@
 
   export let typeLabel: string;
   export let title: string;
-  export let id: string;
+  export let id: string = "";
   export let onPlay: () => void;
   export let onShuffle: () => void;
   export let menuItems: any[] = [];
@@ -46,7 +46,12 @@
   <div
     class="relative z-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-full max-w-[var(--8xl)] mx-auto pb-8 md:pr-6 border-b border-white/10"
   >
-    {#if id}
+    {#if $$slots.cover}
+      <!-- Still needed by playlist page, hoping to remove in the future -->
+      <div class="w-full px-8 md:w-auto md:p-0">
+        <slot name="cover" />
+      </div>
+    {:else if id}
       <div class="w-32 md:w-48 lg:w-56">
         <CoverImage
           src={getImageUrl(id, 240, typeLabel)}
@@ -57,11 +62,6 @@
             : 'rounded-xl'}"
           on:click={() => (imageModalOpen = true)}
         />
-      </div>
-    {:else if $$slots.cover}
-      // Still needed by playlist page, hoping to remove in the future
-      <div class="w-full px-8 md:w-auto md:p-0">
-        <slot name="cover" />
       </div>
     {/if}
 
