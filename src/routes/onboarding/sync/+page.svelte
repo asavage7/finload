@@ -24,7 +24,7 @@
             jobState = state;
         });
 
-        void startJob("sync");
+        void startJob("sync", true);
         return unsubscribe;
     });
 
@@ -35,7 +35,7 @@
             body: JSON.stringify({ onboarding_complete: true }),
         });
         onboardingComplete.set(true);
-        goto("/library");
+        goto("/library?refresh");
     }
 </script>
 

@@ -1,16 +1,10 @@
 """Local-files media provider.
 
-Scans a folder of audio files and exposes them through the same
-``MediaProvider`` interface the rest of the app uses, so local libraries behave
-exactly like a Jellyfin server: the API, sync and playback layers never learn
-that the source is the local disk.
+Scans local files and exposes them to the app through the generic MediaProvider interface,
+so the rest of the app doesn't need to know where the audio came from.
 
-Identity & persistence
------------------------
 Track / album / artist IDs are derived deterministically from tags (and, for
-tracks, the absolute file path) so they stay stable across rescans. The
-``file_path`` column on the ``Track`` DB row maps each track ID back to a file
-on disk, so playback and artwork work after app restarts without a re-scan.
+tracks, the absolute file path) so they stay stable across rescans.
 """
 import base64
 import datetime
@@ -18,7 +12,7 @@ import hashlib
 import logging
 import os
 import re
-from typing import Iterator, List, Optional, Set
+from typing import Callable, Iterator, List, Optional, Set
 
 import mutagen
 from mutagen.flac import Picture
@@ -29,7 +23,7 @@ from .lyrics import NO_LYRICS, fetch_lrclib, parse_lrc
 
 logger = logging.getLogger(__name__)
 
-# File extensions we treat as playable audio.
+# Supported file extensions for local audio files. Case-insensitive.
 AUDIO_EXTENSIONS = {
     ".mp3", ".flac", ".m4a", ".aac", ".alac", ".ogg", ".oga", ".opus",
     ".wav", ".aiff", ".aif", ".wma", ".ape", ".mpc", ".wv",
@@ -40,12 +34,10 @@ AUDIO_EXTENSIONS = {
 COVER_BASENAMES = ("cover", "folder", "front", "album", "albumart", "thumb")
 COVER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 
-
 def _stable_hash(*parts: str) -> str:
     """A short, stable hex digest of the given strings."""
     joined = "\x00".join(parts)
     return hashlib.sha1(joined.encode("utf-8")).hexdigest()[:20]
-
 
 def _first(value, default: str = "") -> str:
     """Mutagen easy-tags return lists; take the first non-empty value."""
@@ -55,22 +47,18 @@ def _first(value, default: str = "") -> str:
         return default
     return str(value).strip() or default
 
-
 def _split_combined_genre(value: str) -> list[str]:
     """Some taggers store multiple genres in one field joined by ';'"""
     return [p.strip() for p in value.split(";") if p.strip()]
-
 
 def _parse_int(value: str) -> int:
     """Parse leading digits from tag values like '3', '03/12' or 'Disc 1'."""
     match = re.search(r"\d+", value or "")
     return int(match.group()) if match else 0
 
-
 def _parse_year(value: str) -> int:
     match = re.search(r"\d{4}", value or "")
     return int(match.group()) if match else 0
-
 
 def _file_mtime(path: str) -> Optional[datetime.datetime]:
     try:
@@ -78,18 +66,14 @@ def _file_mtime(path: str) -> Optional[datetime.datetime]:
     except OSError:
         return None
 
-
 class LocalProvider(MediaProvider):
     SETTINGS_KEYS = ("local_music_path",)
 
     def __init__(self, settings) -> None:
         super().__init__()
-        # track_id -> normalized item dict, populated during a full scan so
-        # ``fetch_items_by_ids`` doesn't have to re-read files it just parsed.
-        self._scan_cache: dict = {}
+        self._id_to_path: dict = {}
         self.configure(settings)
 
-    # -- configuration ------------------------------------------------------
     def configure(self, settings) -> None:
         path = (settings.get("local_music_path") or "").strip()
         self.music_path = os.path.abspath(os.path.expanduser(path)) if path else ""
@@ -97,7 +81,6 @@ class LocalProvider(MediaProvider):
     def is_configured(self) -> bool:
         return bool(self.music_path and os.path.isdir(self.music_path))
 
-    # -- file walking & tag parsing ----------------------------------------
     def _iter_audio_files(self) -> Iterator[str]:
         for root, _dirs, files in os.walk(self.music_path):
             for name in files:
@@ -123,8 +106,11 @@ class LocalProvider(MediaProvider):
         title = _first(tags.get("title"), filename)
         track_artist_name = _first(tags.get("artist"), "Unknown Artist")
         album_artist_name = _first(tags.get("albumartist"), track_artist_name)
+        track_artist_mbid = _first(tags.get("musicbrainz_artistid")) or None
+        album_artist_mbid = _first(tags.get("musicbrainz_albumartistid")) or None
         album_title = _first(tags.get("album"), "Unknown Album")
         genres_raw = tags.get("genre")
+        mbid = _first(tags.get("musicbrainz_trackid")) or None
         if isinstance(genres_raw, (list, tuple)):
             genres_list = []
             for g in genres_raw:
@@ -140,13 +126,14 @@ class LocalProvider(MediaProvider):
 
         track_id = _stable_hash(path)
         album_id = _stable_hash(album_artist_name.lower(), album_title.lower())
+        album_mbid = _first(tags.get("musicbrainz_releasegroupid")) or None
         album_artist_id = _stable_hash(album_artist_name.lower())
         track_artist_id = _stable_hash(track_artist_name.lower())
 
         return {
             "artists": [
-                {"id": album_artist_id, "name": album_artist_name, "provider": "local", "mbid": None},
-                {"id": track_artist_id, "name": track_artist_name, "provider": "local", "mbid": None},
+                {"id": album_artist_id, "name": album_artist_name, "provider": "local", "mbid": album_artist_mbid},
+                {"id": track_artist_id, "name": track_artist_name, "provider": "local", "mbid": track_artist_mbid},
             ],
             "album_data": {
                 "id": album_id,
@@ -154,7 +141,7 @@ class LocalProvider(MediaProvider):
                 "artist": album_artist_id,
                 "release_year": release_year,
                 "provider": "local",
-                "mbid": None,  # no fingerprinting yet - local files aren't MusicBrainz-matched
+                "mbid": album_mbid,
             },
             "track_data": {
                 "id": track_id,
@@ -166,50 +153,65 @@ class LocalProvider(MediaProvider):
                 "duration_ms": duration_ms,
                 "file_path": path,
                 "provider": "local",
-                "mbid": None,
+                "mbid": mbid,
                 "library_id": self.music_path,
-                # File mtime as a proxy "added to library" time - no better
-                # signal exists for local files (no server to ask). Omitted
-                # entirely rather than set to None on a failed stat, so the
-                # DB layer's own "now" fallback applies instead.
+                # File mtime as a proxy "added to library" time.
                 **({"added_at": added_at} if (added_at := _file_mtime(path)) else {}),
             },
             "genres": genres_list,
         }
 
-    # -- sync ---------------------------------------------------------------
+    # Sync
+    def _populate_paths(self, since_ts: Optional[float] = None) -> Set[str]:
+        """Sweeps the local folder to detect changed files."""
+        self._id_to_path.clear()
+        changed = set()
+        
+        for path in self._iter_audio_files():
+            try:
+                stat_result = os.stat(path)
+                latest_time = max(stat_result.st_mtime, stat_result.st_ctime)
+                
+                # Only include if no timestamp is provided, or if file is newer
+                if since_ts is None or latest_time > since_ts:
+                    track_id = _stable_hash(path)
+                    self._id_to_path[track_id] = path
+                    changed.add(track_id)
+            except OSError:
+                pass
+            
+        return changed
+    
     def fetch_all_ids(self) -> Set[str]:
         """Full scan of the library folder."""
-        self._scan_cache = {}
-
+        self._id_to_path.clear()
         for path in self._iter_audio_files():
-            item = self._parse_file(path)
-            if item:
-                self._scan_cache[item["track_data"]["id"]] = item
+            track_id = _stable_hash(path)
+            self._id_to_path[track_id] = path
+        return set(self._id_to_path.keys())
 
-        return set(self._scan_cache.keys())
+    def fetch_changed_ids(self, since: str) -> Optional[Set[str]]:
+        try:
+            since_dt = datetime.datetime.fromisoformat(since.replace("Z", "+00:00"))
+            return self._populate_paths(since_ts=since_dt.timestamp())
+        except (ValueError, TypeError):
+            return None
 
     def fetch_items_by_ids(self, item_ids: List[str]) -> Iterator[dict]:
         try:
             for track_id in item_ids:
-                # pop, not get: nothing re-reads an item, and holding a whole
-                # library of parsed tags after sync is pure resident memory.
-                item = self._scan_cache.pop(track_id, None)
-                if item is None:
-                    # Not in the scan cache; re-parse from the DB-stored path.
+                path = self._id_to_path.get(track_id)
+                if not path:
                     path = self._resolve_track_path(track_id)
-                    if path and os.path.exists(path):
-                        item = self._parse_file(path)
-                if item:
-                    yield item
+                    
+                if path and os.path.exists(path):
+                    item = self._parse_file(path)
+                    if item:
+                        yield item
         finally:
-            self._scan_cache.clear()
+            self._id_to_path.clear()
 
-    def fetch_changed_ids(self, since: str) -> Optional[Set[str]]:
-        """No incremental change detection for local files yet."""
-        return None
-
-    # -- playback -----------------------------------------------------------
+    # Playback
     def _resolve_track_path(self, track_id: str) -> Optional[str]:
         track = Track.get_or_none(Track.id == track_id)
         return track.file_path if track and track.file_path else None
@@ -221,7 +223,7 @@ class LocalProvider(MediaProvider):
             raise FileNotFoundError(f"No local file for track {track_id}")
         return path
 
-    # -- artwork ------------------------------------------------------------
+    # Artwork
     def _find_cover_file(self, directory: str) -> Optional[str]:
         try:
             entries = os.listdir(directory)
@@ -318,7 +320,7 @@ class LocalProvider(MediaProvider):
             logger.warning("Failed to write local artwork for %s: %s", item_id, exc)
             return False
 
-    # -- lyrics -------------------------------------------------------------
+    # Lyrics
     def get_lyrics(self, track_id: str, lrclib_enabled: bool = True,
                    synced_enabled: bool = True) -> dict:
         path = self._resolve_track_path(track_id)

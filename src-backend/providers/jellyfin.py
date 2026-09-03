@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, Iterator, List, Optional, Set
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set
 
 from core.config import APP_NAME, APP_VERSION, USER_AGENT, get_device_id
 from core.database import Track
@@ -266,7 +266,7 @@ class JellyfinProvider(MediaProvider):
                 return
             start += _ITEMS_PAGE_SIZE
 
-    def _fetch_ids_scoped(self, base_query: Dict[str, Any]) -> Set[str]:
+    def _fetch_ids_scoped(self, base_query: Dict[str, Any], progress_callback: Callable[[int], None] | None = None) -> Set[str]:
         """Returns a set of item IDs matching base_query, scoped to selected libraries."""
         selected = self._selected_library_ids()
         if not selected:
@@ -291,11 +291,11 @@ class JellyfinProvider(MediaProvider):
         "EnableTotalRecordCount": "false",
     }
 
-    def fetch_all_ids(self) -> Set[str]:
+    def fetch_all_ids(self, progress_callback: Callable[[int], None] | None = None) -> Set[str]:
         self._id_to_library = {}
         return self._fetch_ids_scoped(dict(self._ID_SWEEP_QUERY))
 
-    def fetch_changed_ids(self, since: str) -> Set[str]:
+    def fetch_changed_ids(self, since: str, progress_callback: Callable[[int], None] | None = None) -> Set[str]:
         """IDs of tracks Jellyfin has saved (added or edited) since a given date."""
         # Reset here too, or the map grows across every incremental sync.
         self._id_to_library = {}
