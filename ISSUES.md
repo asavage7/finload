@@ -1,10 +1,19 @@
-### Known Issues
+# Known Issues
+If an issue is shown with ~~strikethrough~~, the issue is fixed but a release hasn't been published yet.
+Please submit issues not on this list to [the issues page](https://github.com/asavage7/finload/issues).
 
-- Switching between Jellyfin and Local files requires a restart to clear database issues
-- Discovery algorithm needs tweaked, especially for isolated genres
+### Library/Browsing
 - Library tabs sometimes need to be scrolled for content to appear
 - Volume UI needs tweaked
 - Autoplay toggle does not persist on queue clear
+
+### Playback
 - Volume normalization does not adjust volume of non-normalized tracks, causing them to be much louder
-- WebKitGTK has different blur rendering than Firefox/Chromium, causing odd blur behaviors. 
+
+### Discovery
+- Missing a proper testing suite to determine functionality/regression.
+
+### DB/Backend
+- WebKitGTK has different blur rendering than most other renderers, causing odd blur behaviors.
 - Some settings toggles are not fully functional.
+- Audio analysis through jellyfin is fairly slow due to bandwidth limitations. (Looks like this is unfixable without changes to Jellyfin :/ )

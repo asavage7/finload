@@ -225,7 +225,9 @@ class GenreEnrichmentManager(BackgroundJob):
                 # a feature the user just disabled.
                 self._emit(status="idle", message="Stopped - disabled in settings")
                 return
-            self.wait_if_paused()
+            if self.should_stop():
+                self._emit(status="idle", message="Stopped")
+                return
             try:
                 self._enrich_album(album, api_key)
                 unreachable = 0

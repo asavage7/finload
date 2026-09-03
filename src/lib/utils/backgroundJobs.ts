@@ -1,6 +1,4 @@
-// Generic client for the backend's background-job routes (routers/jobs.py):
-// one status shape, one websocket pattern, for sync / metadata / genre
-// enrichment (and any future job) instead of bespoke wiring per job.
+// Generic client for the backend's background-job routes (routers/jobs.py)
 import { apiUrl, wsUrl } from "$lib/backend";
 
 export type JobStatus = "idle" | "running" | "complete" | "error";
@@ -10,27 +8,17 @@ export type JobState = {
   message: string;
   processed: number;
   total: number;
-  [key: string]: unknown; // job-specific extras, e.g. sync's added/removed
+  [key: string]: unknown; // job-specific extras
 };
 
-// Shape of one entry from GET /api/jobs. Display metadata (label,
-// description, which settings key gates it) lives in the frontend's
-// settings schema instead — this is only what the backend actually owns.
+// How the backend returns job info
 export type JobInfo = {
   name: string;
   supports_force: boolean;
   state: JobState;
 };
 
-// Live progress for one job via its websocket. Returns an unsubscribe function.
-//
-// Reconnects on any close: the sidecar restarting (a dev --reload, or a real
-// respawn) or the machine sleeping/waking drops the socket, and with no
-// reconnect the UI would freeze on whatever state it last received -- e.g. a
-// spinner stuck on "running" forever even after the job actually finished or
-// got turned off backend-side. A fresh connection's add_listener() replies
-// with the job's current state immediately, so reconnecting also self-heals
-// that stale state.
+// Live progress for one job via its websocket.
 export function subscribeJobStatus(name: string, onUpdate: (state: JobState) => void): () => void {
   let unsubscribed = false;
   let ws: WebSocket | null = null;
@@ -60,5 +48,11 @@ export async function startJob(name: string, force = false): Promise<void> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ force }),
+  });
+}
+
+export async function stopJob(name: string): Promise<void> {
+  await fetch(apiUrl(`/api/jobs/${name}/stop`), {
+    method: "POST",
   });
 }
