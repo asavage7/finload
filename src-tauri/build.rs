@@ -83,7 +83,15 @@ fn main() {
     // reach the bundle until something forces a rerun (touching build.rs, a
     // clean build). Listed individually, not the whole src-backend/ root, so
     // .venv/ churn doesn't trigger a PyInstaller rebuild on every touch.
-    for entry in ["core", "providers", "routers", "services", "main.py", "finload.spec", "requirements.txt"] {
+    for entry in [
+        "core",
+        "providers",
+        "routers",
+        "services",
+        "main.py",
+        "finload.spec",
+        "requirements.txt",
+    ] {
         println!("cargo:rerun-if-changed=../src-backend/{entry}");
     }
     let skip = env::var("SKIP_PYINSTALLER")
@@ -132,7 +140,9 @@ fn main() {
                 }
                 None => {
                     println!("cargo:warning=mpv-2.dll not found — audio will not work in the bundled app.");
-                    println!("cargo:warning=Run: npm run vendor:mpv-windows  (then re-run the build)");
+                    println!(
+                        "cargo:warning=Run: npm run vendor:mpv-windows  (then re-run the build)"
+                    );
                 }
             }
         }
