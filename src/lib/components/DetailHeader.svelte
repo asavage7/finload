@@ -11,6 +11,7 @@
 
   export let typeLabel: string;
   export let title: string;
+  export let imageSrc: string = "";
   export let bgSrc: string = "";
   export let onPlay: () => void;
   export let onShuffle: () => void;
@@ -43,7 +44,16 @@
   <div
     class="relative z-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-full max-w-[var(--8xl)] mx-auto pb-8 md:pr-6 border-b border-white/10"
   >
-    {#if $$slots.cover}
+    {#if imageSrc}
+      <div class="w-32 md:w-48 lg:w-56">
+        <CoverImage
+          src={imageSrc}
+          alt="Image of {title}"
+          showPlaceholder={false}
+          class="w-full aspect-square cursor-pointer {typeLabel === 'ARTIST' ? 'rounded-full' : 'rounded-xl'}"
+        />
+      </div>
+    {:else if $$slots.cover} // Still needed by playlist page, hoping to remove in the future
       <div class="w-full px-8 md:w-auto md:p-0">
         <slot name="cover" />
       </div>

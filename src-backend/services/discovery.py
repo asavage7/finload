@@ -39,9 +39,9 @@ logger = logging.getLogger(__name__)
 # Similarity scoring tunables.
 
 # These 3 must sum to 1, and automatically adjust when there's poor data on one or more.
-GENRE_WEIGHT = 0.40    
-TIMBRE_WEIGHT = 0.42   
-TEMPO_WEIGHT = 0.18    
+GENRE_WEIGHT = 0.25    
+TIMBRE_WEIGHT = 0.5   
+TEMPO_WEIGHT = 0.25    
 
 DSP_FULL_COVERAGE = 0.9         # Fraction of library analyzed where DSP is full strength. If below this, it's a % of the library analyzed.
 ARTIST_TAG_WEIGHT = 0.75        # Fraction of album tag weights to use for artist tags when creating a tag profile. Default is 0.75 (artist tags are 75% as important as album tags).
@@ -85,7 +85,7 @@ OPENER_WEIGHT_POWER = 2.0       # Opener draw weight = score**this: the best fit
 RATING_NUDGE = 0.1              # Per-star score change around a neutral 3 stars
 SHORT_TRACK_FULL_S = 60         # Score ramps linearly with track length up to this in seconds, penalizing intros/interludes. Set low thanks to Minor Threat.
 FATIGUE_HALF_LIFE_DAYS = 12.0   # Recovery rate for a recently played track. Default: Track stops being penalized after 12 days. Tracks can still appear during the time, just not as likely.
-POOL_CAP = 250                  # candidates the per-pick loop scores, ranked by relevance.
+POOL_CAP = 1000                  # candidates the per-pick loop scores, ranked by relevance.
 
 def _bulk_load_features() -> dict[str, dict]:
     """Returns a feature dict for every track with current-version cached features.
@@ -767,7 +767,7 @@ def build_queue(seed_track_id: str, queue_length: int = 20,
     for i in range(queue_length):
         # The scorer still reflects the session as of the start of this position
         elapsed_minutes = elapsed_ms / 60000.0
-        scorer.seed_weight = (max(seed_floor, 1.0 - elapsed_minutes / SEED_DECAY_MINUTES)
+        scorer.seed_weight = (max(seed_floor, 1.0 - max(0.0, elapsed_minutes) / (SEED_DECAY_MINUTES / 2.0))
                               if len(anchors) else 1.0)
 
         # Penalize the opener's album so the queue doesn't just play one album, since technically it *is* the most similar
