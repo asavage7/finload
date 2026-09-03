@@ -3,6 +3,7 @@ If an issue is shown with ~~strikethrough~~, the issue is fixed but a release ha
 Please submit issues not on this list to [the issues page](https://github.com/asavage7/finload/issues).
 
 ### Library/Browsing
+- Sync does a long search before adding any tracks, makes it seem like the app is frozeon on large libraries.
 - Library tabs sometimes need to be scrolled for content to appear
 - Volume UI needs tweaked
 - Autoplay toggle does not persist on queue clear

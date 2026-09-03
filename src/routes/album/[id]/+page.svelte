@@ -101,17 +101,11 @@
                 typeLabel="ALBUM"
                 title={albumData.title}
                 bgSrc={getImageUrl(albumData.id, 240)}
+                imageSrc={getImageUrl(albumData.id, 240)}
                 onPlay={() => playAlbum(albumId, false)}
                 onShuffle={() => playAlbum(albumId, true)}
                 menuItems={buildCollectionMenuItems(allTrackIds, { id: albumId, type: 'album' })}
             >
-                <CoverImage
-                    slot="cover"
-                    src={getImageUrl(albumData.id, 240)}
-                    alt={albumData.title}
-                    fallbackText={albumData.title}
-                    class="w-full max-w-[40vh] aspect-square md:w-60 md:h-60 mx-auto rounded-xl shadow-2xl border border-white/10 bg-zinc-800"
-                />
                 <svelte:fragment slot="meta">
                     <a
                         href={`/artist/${encodeURIComponent(albumData.artist_id)}`}
