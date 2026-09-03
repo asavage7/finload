@@ -11,7 +11,6 @@
     import Rating from "$lib/components/Rating.svelte";
     import Loading from "$lib/components/Loading.svelte";
     import EmptyState from "$lib/components/EmptyState.svelte";
-    import CoverImage from "$lib/components/CoverImage.svelte";
     import BackButton from "$lib/components/ui/BackButton.svelte";
     import {
         IconDisc,

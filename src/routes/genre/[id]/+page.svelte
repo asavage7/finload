@@ -12,7 +12,6 @@
   import { IconTagFilled, IconPlugConnectedX } from "@tabler/icons-svelte";
   import { apiUrl } from "$lib/backend";
   import { getImageUrl, fetchAccentColors } from "$lib/utils/media";
-  import { blendHex } from "$lib/utils/color";
   import { playTracks, buildCollectionMenuItemsWithSources } from "$lib/utils/playback";
 
   const genreId = page.params.id!;
