@@ -97,7 +97,7 @@
 {#if isLoading}
     <Loading />
 {:else if artistData}
-    {@const blendedBg = blendHex(artistData.accent_colors[2], "#18181B", 0.15)}
+    {@const blendedBg = blendHex(artistData.accent_colors[2], "#18181B", 0.2)}
     <ViewLayout bgColor={blendedBg} accent={artistData.accent_colors}>
         <svelte:fragment slot="header">
             <DetailHeader

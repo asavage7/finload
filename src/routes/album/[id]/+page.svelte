@@ -93,8 +93,9 @@
 {#if isLoading}
     <Loading />
 {:else if albumData}
-    {@const blendedBg = blendHex(albumData.accent_colors[2], "#18181B", 0.15)}
-    <ViewLayout bgColor={blendedBg} accent={albumData.accent_colors}>
+    {@const blendedBg = blendHex(albumData.accent_colors[2], "#18181B", 0.2)}
+    <ViewLayout bgColor={blendedBg} accent={albumData.accent_colors}
+    >
         <svelte:fragment slot="header">
             <DetailHeader
                 typeLabel="ALBUM"
