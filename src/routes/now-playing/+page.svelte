@@ -18,7 +18,7 @@
       src={getImageUrl($playerState.current_track?.album_id || "default", 800)}
       alt=""
       showPlaceholder={false}
-      class="w-full h-full scale-135 blur-3xl animate-spin-bg"
+      class="w-[max(100vw,100vh)] h-[max(100vw,100vh)] aspect-square scale-135 animate-spin-bg blur-3xl"
     />
   </div>
   <div

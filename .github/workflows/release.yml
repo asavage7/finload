@@ -230,8 +230,8 @@ jobs:
       - name: Verify mpv was bundled
         shell: bash
         run: |
-          if [ ! -f src-tauri/binaries/backend/libmpv-2.dll ]; then
-            echo "::error::libmpv-2.dll is missing from the backend bundle -- audio would not work"
+          if [ ! -f src-tauri/binaries/backend/mpv-2.dll ]; then
+            echo "::error::mpv-2.dll is missing from the backend bundle -- audio would not work"
             exit 1
           fi
 
