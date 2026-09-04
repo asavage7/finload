@@ -36,7 +36,7 @@
         src={getImageUrl(id, 240, typeLabel)}
         alt=""
         showPlaceholder={false}
-        class="w-full h-full blur-3xl"
+        class="w-full h-full blur-3xl scale-110"
       />
     </div>
   {/if}

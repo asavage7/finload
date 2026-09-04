@@ -95,7 +95,7 @@
 {#if isLoading}
     <Loading />
 {:else if playlistData}
-    {@const blendedBg = blendHex(accentColors[2], "#18181b", 0.15)}
+    {@const blendedBg = blendHex(accentColors[2], "#18181b", 0.2)}
     <ViewLayout bgColor={blendedBg} accent={accentColors}>
         <svelte:fragment slot="header">
             <DetailHeader

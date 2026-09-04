@@ -97,11 +97,17 @@
     });
 
     $: if (lyrics.type === "synced" && activeLyricIndex >= 0) {
-        lyricElements[activeLyricIndex]?.scrollIntoView({
-            behavior: "smooth",
-            block: "center",
-        });
+    const el = lyricElements[activeLyricIndex];
+    
+    if (el && el.offsetParent) {
+        const container = el.parentElement;
+        if (container) {
+            const targetTop = el.offsetTop - (container.clientHeight / 2) + (el.clientHeight / 2);
+
+            container.scrollTo({ top: targetTop, behavior: "smooth" });
+        }
     }
+}
 
     async function getLyrics(trackId: string) {
         loadingLyrics = true;
@@ -450,7 +456,7 @@
             </div>
         {:else if lyrics.type === "synced"}
             <div
-                class="p-4 text-2xl text-white/50 overflow-y-auto flex-1 min-h-0"
+                class="p-4 text-2xl text-white/50 overflow-y-auto flex-1 min-h-0 relative"
             >
                 {#each lyrics.lines as line, index}
                     <button
