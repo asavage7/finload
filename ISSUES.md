@@ -4,7 +4,7 @@ Please submit issues not on this list to [the issues page](https://github.com/as
 
 ### Library/Browsing
 - ~~Sync does a long search before adding any tracks, makes it seem like the app is frozeon on large libraries.~~ (Still an initial waiting period, but now more accurately shows added tracks as they happen.)
-- Library tabs sometimes need to be scrolled for content to appear
+- ~~Library tabs sometimes need to be scrolled for content to appear~~ Appears to been fixed while doing library scroll improvements.
 - Volume UI needs tweaked
 - Autoplay toggle does not persist on queue clear
 

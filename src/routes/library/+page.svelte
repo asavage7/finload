@@ -522,7 +522,7 @@
     </div>
   </div>
 
-  <div slot="content" class="w-full h-full flex flex-col min-h-0 overflow-hidden">
+  <div slot="content" class="w-full h-full flex flex-col min-h-0 overflow-hidden mb-28">
     {#key activeTab}
     <div
       class="w-full h-full flex flex-col min-h-0"

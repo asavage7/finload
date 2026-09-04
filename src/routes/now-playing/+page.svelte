@@ -5,7 +5,6 @@
   import RightPanel from "$lib/components/panels/RightPanel.svelte";
   import BackButton from "$lib/components/ui/BackButton.svelte";
   import { getImageUrl } from "$lib/utils/media";
-  import { slide } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
 </script>
 
@@ -27,7 +26,6 @@
   >
     <div
       class="flex w-5/8 min-w-0 flex-1 flex-col items-center gap-2 text-center z-10"
-      transition:slide={{ axis: "x", duration: 150, easing: cubicOut }}
     >
       <CoverImage
         src={getImageUrl(
@@ -77,7 +75,6 @@
     {#if $queuePanelActive}
       <div class="flex h-full w-3/8 justify-center overflow-hidden py-16">
         <div
-          transition:slide={{ axis: "x", duration: 150, easing: cubicOut }}
           class="flex h-full w-full max-w-xl mx-auto justify-center overflow-hidden"
         >
           <RightPanel />
