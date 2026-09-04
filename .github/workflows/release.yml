@@ -83,7 +83,7 @@ jobs:
       # dependency, so FINLOAD_TRIM_MPV=1 strips the ~170MB of bundled GUI/codec
       # closure and lets them use the system library. The npm script sets it.
       - name: Build deb and rpm
-        run: npm run build:tauri:linux-installers
+        run: npm run build:linux-installers
 
       # The AppImage has to run where no libmpv is installed at all, so it keeps
       # the full closure — FINLOAD_TRIM_MPV must stay unset here. build.rs
@@ -94,7 +94,7 @@ jobs:
           # linuxdeploy is itself an AppImage and GitHub runners have no FUSE
           # mount available to it; this makes it self-extract instead.
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: npm run build:tauri:appimage
+        run: npm run build:appimage
 
       - name: Collect artifacts
         id: collect
@@ -214,7 +214,7 @@ jobs:
         shell: bash
         run: |
           python -m venv src-backend/.venv
-          src-backend/.venv/Scripts/pip install --upgrade pip
+          src-backend/.venv/Scripts/python.exe -m pip install --upgrade pip
           src-backend/.venv/Scripts/pip install -r src-backend/requirements.txt
 
       # Pinned, checksummed download -- see scripts/fetch-mpv-windows.mjs for
