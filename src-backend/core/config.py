@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 # User agent identifiers. Version is automatically set from scripts/set-version.mjs
 APP_NAME = "Finload"
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.2.0"
 USER_AGENT = f"{APP_NAME.lower()}/{APP_VERSION}"
 
 
