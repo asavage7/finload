@@ -53,9 +53,7 @@ Finload analyzes your music directly using DSP to extract acoustic similarites b
 
 ## AI Usage
 
-**The UI, product design, and logo of Finload are not, and will never be, AI generated.**
-
-However, AI tools have been used in Finload's development. Care is taken to ensure code is readable, well-tested, and free of errors. Files that contain mostly AI-generated code are marked accordingly. Core application logic is currently being rewritten to reduce AI usage where appropriate.
+Agentic AI tools have historically been used in Finload's development. I have stopped using these tools entirely, however, AI-generated code still exists in Finload. I have been continually refactoring parts of the app over time to remove AI code, especially where it creates issues or makes maintenance harder. Logos, UI design, etc. were all human-generated from the start, but some frontend functions may still contain AI-generated code.
 
 ## Install
 
