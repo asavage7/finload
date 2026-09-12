@@ -146,11 +146,12 @@ def _normalize_group(rows: list[tuple[str, int]]) -> dict[str, float]:
     Scaled with the top tag at 1.0, square-rooted so secondary tags survive rather than being crushed by the top one."""
     if not rows:
         return {}
-    max_w = max(w for _, w in rows)
+    # Default weight 0 (e.g. MusicBrainz) to 1 so curated tags aren't wiped out by max_w
+    max_w = max((w for _, w in rows if w > 0), default=1)
     scaled: dict[str, float] = {}
     for name, w in rows:
-        # Still add with weight 0, just means not Last.fm
-        v = 1.0 if max_w <= 0 else math.sqrt(w / max_w)
+        # Curated MB tags (w=0) get perfect 1.0 weight. Last.fm tags scale relative to max scrobbles.
+        v = 1.0 if w == 0 else (w / max_w)
         prev = scaled.get(name)
         if prev is None or v > prev:
             scaled[name] = v
@@ -255,7 +256,7 @@ def similarity(feat_a: dict | None, feat_b: dict | None, tags_a: dict[str, float
     Confidence is a weighted blend of genre tag overlap, DSP feature similarity, and BPM similarity.
     If one of these signals is missing, the others gain more weight to make up the difference. If all signals are missing, returns 0.0."""
     tag_overlap = _weighted_overlap(tags_a, tags_b)
-    tag_confidence = min(len(tags_a), len(tags_b), 4) / 4.0
+    tag_confidence = min(len(tags_a), len(tags_b), 2) / 2.0
     genre_pct = tag_confidence * tag_overlap
     w_genre = GENRE_WEIGHT if (tags_a and tags_b) else 0.0
 
@@ -263,9 +264,12 @@ def similarity(feat_a: dict | None, feat_b: dict | None, tags_a: dict[str, float
         return genre_pct
 
     vec_closeness = _mutual_proximity(math.sqrt(_sq_distance(feat_a, feat_b)), feat_a, feat_b)
-    norm_bpm = min(_bpm_distance(feat_a["bpm"], feat_b["bpm"]) / BPM_DELTA_NORM, 1.0)
     timbre_pct = vec_closeness
-    tempo_pct = 1.0 - norm_bpm
+    if feat_a["bpm"] == 0.0 or feat_b["bpm"] == 0.0:
+        tempo_pct = 0.5  # Neutral penalty for missing data
+    else:
+        norm_bpm = min(_bpm_distance(feat_a["bpm"], feat_b["bpm"]) / BPM_DELTA_NORM, 1.0)
+        tempo_pct = 1.0 - norm_bpm
 
     w_timbre = TIMBRE_WEIGHT * dsp_weight
     w_tempo = TEMPO_WEIGHT * dsp_weight
@@ -447,13 +451,14 @@ def _repeat_load(recent: list[str]) -> dict[str, float]:
 def _blend_seed_tags(seed_ids: list[str], tags_by_id: dict[str, dict[str, float]]) -> dict[str, float]:
     """Multi-track blended seed for album/artist radios. Averages out the tags of all seed tracks,
     but keeps the strongest weight for each instead of a true average."""
-    blended: dict[str, float] = {}
+    totals: dict[str, float] = {}
+    count = len(seed_ids)
+    if not count:
+        return {}
     for tid in seed_ids:
         for name, w in tags_by_id.get(tid, {}).items():
-            prev = blended.get(name)
-            if prev is None or w > prev:
-                blended[name] = w
-    return blended
+            totals[name] = totals.get(name, 0.0) + w
+    return {name: total / count for name, total in totals.items()}
 
 def _bulk_load_fatigue() -> dict[str, float]:
     """Returns a per-track playback-fatigue multiplier for every track with play history, in one query.
