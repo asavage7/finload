@@ -39,9 +39,10 @@ logger = logging.getLogger(__name__)
 # Similarity scoring tunables.
 
 # These 3 must sum to 1, and automatically adjust when there's poor data on one or more.
-GENRE_WEIGHT = 0.5    
-TIMBRE_WEIGHT = 0.35   
-TEMPO_WEIGHT = 0.15    
+GENRE_WEIGHT = 0.45    
+TIMBRE_WEIGHT = 0.30   
+TEMPO_WEIGHT = 0.10    
+DYNAMICS_WEIGHT = 0.15
 
 DSP_FULL_COVERAGE = 0.9         # Fraction of library analyzed where DSP is full strength. If below this, it's a % of the library analyzed.
 ARTIST_TAG_WEIGHT = 0.75        # Fraction of album tag weights to use for artist tags when creating a tag profile. Default is 0.75 (artist tags are 75% as important as album tags).
@@ -96,7 +97,8 @@ def _bulk_load_features() -> dict[str, dict]:
     from services.audio_analysis import FEATURE_VERSION
 
     track_ids: list[str] = []
-    vectors: list[list[float]] = []
+    timbre_vectors: list[list[float]] = []
+    dyn_vectors: list[list[float]] = []
     meta: list[tuple] = []
     query = TrackFeatures.select(
         TrackFeatures.track, TrackFeatures.bpm, TrackFeatures.features,
@@ -107,7 +109,8 @@ def _bulk_load_features() -> dict[str, dict]:
             continue
         f = json.loads(raw)
         track_ids.append(track_id)
-        vectors.append(f["mfcc_mean"] + f["mfcc_std"] + f["contrast_mean"])
+        timbre_vectors.append(f["mfcc_mean"] + f["mfcc_std"] + f["contrast_mean"])
+        dyn_vectors.append(f["mfcc_delta"])
         meta.append((bpm, dist_center, dist_scale))
 
     if not track_ids:
@@ -122,18 +125,27 @@ def _bulk_load_features() -> dict[str, dict]:
                 "the library is re-analyzed.", FEATURE_VERSION, stale)
         return {}
 
-    matrix = np.asarray(vectors, dtype=float)
-    std = matrix.std(axis=0)
-    std[std < 1e-12] = 1.0  # a constant dimension centers to zero and carries no signal
-    matrix = (matrix - matrix.mean(axis=0)) / std
-    norms = (matrix * matrix).sum(axis=1).tolist()
+    t_matrix = np.asarray(timbre_vectors, dtype=float)
+    t_std = t_matrix.std(axis=0)
+    t_std[t_std < 1e-12] = 1.0
+    t_matrix = (t_matrix - t_matrix.mean(axis=0)) / t_std
+    t_norms = (t_matrix * t_matrix).sum(axis=1).tolist()
 
-    # Returns a dict of track_id -> {"vec": (vector), "sq": squared_norm, "bpm": bpm, "dist_center": dist_center, "dist_scale": dist_scale}
+    d_matrix = np.asarray(dyn_vectors, dtype=float)
+    d_std = d_matrix.std(axis=0)
+    d_std[d_std < 1e-12] = 1.0
+    d_matrix = (d_matrix - d_matrix.mean(axis=0)) / d_std
+    d_norms = (d_matrix * d_matrix).sum(axis=1).tolist()
+
     return {
-        track_id: {"vec": tuple(vec), "sq": sq, "bpm": bpm or 0.0,
-                   "dist_center": dist_center or 0.0, "dist_scale": dist_scale or 0.0}
-        for track_id, vec, sq, (bpm, dist_center, dist_scale)
-        in zip(track_ids, matrix.tolist(), norms, meta)
+        track_id: {
+            "vec": tuple(t_vec), "sq": t_sq, 
+            "dyn_vec": tuple(d_vec), "dyn_sq": d_sq, 
+            "bpm": bpm or 0.0,
+            "dist_center": dist_center or 0.0, "dist_scale": dist_scale or 0.0
+        }
+        for track_id, t_vec, t_sq, d_vec, d_sq, (bpm, dist_center, dist_scale)
+        in zip(track_ids, t_matrix.tolist(), t_norms, d_matrix.tolist(), d_norms, meta)
     }
 
 def _canon_tag(name: str) -> str:
@@ -216,12 +228,9 @@ def _weighted_overlap(a: dict[str, float], b: dict[str, float]) -> float:
             den += vb
     return num / den if den else 0.0
 
-def _sq_distance(feat_a: dict, feat_b: dict) -> float:
-    """Squared euclidean distance between two feature vectors, via
-    ||a-b||^2 = ||a||^2 + ||b||^2 - 2 a.b so the inner loop is one C-level
-    map/sum over the cached norms rather than a Python generator."""
-    dot = sum(map(mul, feat_a["vec"], feat_b["vec"]))
-    return max(feat_a["sq"] + feat_b["sq"] - 2.0 * dot, 0.0)
+def _sq_distance(vec_a: tuple, sq_a: float, vec_b: tuple, sq_b: float) -> float:
+    dot = sum(map(mul, vec_a, vec_b))
+    return max(sq_a + sq_b - 2.0 * dot, 0.0)
 
 def _bpm_distance(bpm_a: float, bpm_b: float) -> float:
     """Absolute BPM difference. No octave correction, causes false positives."""
@@ -263,23 +272,31 @@ def similarity(feat_a: dict | None, feat_b: dict | None, tags_a: dict[str, float
     if dsp_weight <= 0.0 or feat_a is None or feat_b is None:
         return genre_pct
 
-    vec_closeness = _mutual_proximity(math.sqrt(_sq_distance(feat_a, feat_b)), feat_a, feat_b)
+    timbre_sq_dist = _sq_distance(feat_a["vec"], feat_a["sq"], feat_b["vec"], feat_b["sq"])
+    vec_closeness = _mutual_proximity(math.sqrt(timbre_sq_dist), feat_a, feat_b)
     timbre_pct = vec_closeness
+    
+    dyn_sq_dist = _sq_distance(feat_a["dyn_vec"], feat_a["dyn_sq"], feat_b["dyn_vec"], feat_b["dyn_sq"])
+    dynamics_pct = max(1.0 - (math.sqrt(dyn_sq_dist) / VEC_DIST_NORM), 0.0)
+    
     if feat_a["bpm"] == 0.0 or feat_b["bpm"] == 0.0:
-        tempo_pct = 0.5  # Neutral penalty for missing data
+        tempo_pct = 0.5  
     else:
         norm_bpm = min(_bpm_distance(feat_a["bpm"], feat_b["bpm"]) / BPM_DELTA_NORM, 1.0)
         tempo_pct = 1.0 - norm_bpm
 
     w_timbre = TIMBRE_WEIGHT * dsp_weight
     w_tempo = TEMPO_WEIGHT * dsp_weight
-    total_w = w_genre + w_timbre + w_tempo
-    return (w_genre * genre_pct + w_timbre * timbre_pct + w_tempo * tempo_pct) / total_w
+    w_dynamics = DYNAMICS_WEIGHT * dsp_weight
+    
+    total_w = w_genre + w_timbre + w_tempo + w_dynamics
+    return (w_genre * genre_pct + w_timbre * timbre_pct + w_tempo * tempo_pct + w_dynamics * dynamics_pct) / total_w
 
 def _blend_profile(track_ids: list[str], features_by_id: dict[str, dict]) -> dict | None:
     """Average N tracks' feature vectors into one synthetic feat (build_queue's
     extra_seed_ids). None if none of the ids have cached features."""
     vec_acc: list[float] | None = None
+    dyn_acc: list[float] | None = None
     bpm_acc = 0.0
     count = 0
     for track_id in track_ids:
@@ -288,17 +305,28 @@ def _blend_profile(track_ids: list[str], features_by_id: dict[str, dict]) -> dic
             continue
         if vec_acc is None:
             vec_acc = [0.0] * len(feat["vec"])
+            dyn_acc = [0.0] * len(feat["dyn_vec"])
         for i, v in enumerate(feat["vec"]):
             vec_acc[i] += v
+        for i, v in enumerate(feat["dyn_vec"]):
+            dyn_acc[i] += v
         bpm_acc += feat["bpm"]
         count += 1
 
     if vec_acc is None:
         return None
     vec = tuple(v / count for v in vec_acc)
-    # Hubness is a property of one track's real distance distribution, not something to average
-    return {"vec": vec, "sq": sum(v * v for v in vec), "bpm": bpm_acc / count,
-            "dist_center": 0.0, "dist_scale": 0.0}
+    dyn_vec = tuple(v / count for v in dyn_acc)
+    
+    return {
+        "vec": vec, 
+        "sq": sum(v * v for v in vec),
+        "dyn_vec": dyn_vec,
+        "dyn_sq": sum(v * v for v in dyn_vec),
+        "bpm": bpm_acc / count,
+        "dist_center": 0.0, 
+        "dist_scale": 0.0
+    }
 
 def _dsp_weight(analyzed: int, total: int) -> float:
     """Automatically scales DSP's weight in scoring if a library doesn't have full analysis."""
@@ -594,8 +622,8 @@ class _Scorer:
             repeat_penalty = 1.0
 
         rating = 1.0 + RATING_NUDGE * (e.rating - 3) if e.rating else 1.0
-        return ((relevance - e.skip_repel) * repeat_penalty * e.fatigue * rating
-                * _duration_factor(e.duration_ms))
+        base_relevance = max(0.0, relevance - e.skip_repel)
+        return (base_relevance * repeat_penalty * e.fatigue * rating * _duration_factor(e.duration_ms))
 
 def _soft_hinge(x: float, softness: float) -> float:
     """max(0.0, x) with a rounded corner over softness.

@@ -279,12 +279,16 @@ class DatabaseManager:
                 for row in Artist.select(Artist.id, Artist.name)}
 
     def save_track_features(self, track_id: str, bpm: float, mfcc_mean: list,
-                             mfcc_std: list, contrast_mean: list) -> None:
+                            mfcc_std: list, mfcc_delta: list, contrast_mean: list) -> None:
         from services.audio_analysis import FEATURE_VERSION
         TrackFeatures.insert(
             track=track_id, bpm=bpm, feature_version=FEATURE_VERSION,
-            features=json.dumps({"mfcc_mean": mfcc_mean, "mfcc_std": mfcc_std,
-                                 "contrast_mean": contrast_mean}),
+            features=json.dumps({
+                "mfcc_mean": mfcc_mean, 
+                "mfcc_std": mfcc_std,
+                "mfcc_delta": mfcc_delta, 
+                "contrast_mean": contrast_mean
+            }),
         ).on_conflict_replace().execute()
 
     def save_hubness_stats(self, stats: list) -> None:

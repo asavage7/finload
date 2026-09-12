@@ -31,7 +31,7 @@ from services.background import BackgroundJob
 logger = logging.getLogger(__name__)
 
 # Bumped when the feature set or extractor changes
-FEATURE_VERSION = 5
+FEATURE_VERSION = 6
 
 # 22050 is the default, above doesn't produce better results and is slower.
 SR = 22050
@@ -66,14 +66,11 @@ _HUBNESS_BLOCK = 1000 # Rows of matrix built at once, capping saves memory.
 # Scales MAD up to a std-equivalent under approximate normality (1/Phi^-1(0.75)).
 _MAD_TO_STD = 1.4826
 
-
 def _feature_vector(features: dict) -> list:
     """Converts a features dict into a feature vector."""
-    return features["mfcc_mean"] + features["mfcc_std"] + features["contrast_mean"]
-
+    return features["mfcc_mean"] + features["mfcc_std"] + features["mfcc_delta"] + features["contrast_mean"]
 
 _librosa = None
-
 
 def _ensure_librosa():
     """Import librosa with numba replaced by the pure-Python shim, patching the
@@ -266,16 +263,19 @@ def _refine_tempo(librosa, np, onset_env, sr: int, coarse_bpm: float) -> float:
     offset = float(np.clip(0.5 * (prev - nxt) / curvature, -0.5, 0.5))
     return 60.0 * sr / (HOP * (lag + offset))
 
-
 def _mfcc_stats(np, mfcc):
-    """Returns per-coefficient mean, and std measured within blocks."""
+    """Returns per-coefficient global mean, local block std (micro-dynamics), 
+    and block mean delta (macro-dynamics)."""
     frames = mfcc.shape[1]
     per_block = max(1, int(round(STATS_BLOCK_S * SR / HOP)))
     n_blocks = max(1, int(round(frames / per_block)))
     if n_blocks < 2:
-        return mfcc.mean(axis=1), mfcc.std(axis=1)
+        return mfcc.mean(axis=1), mfcc.std(axis=1), np.zeros(mfcc.shape[0])
     blocks = np.array_split(mfcc, n_blocks, axis=1)
-    return mfcc.mean(axis=1), np.mean([b.std(axis=1) for b in blocks], axis=0)
+    local_stds = np.mean([b.std(axis=1) for b in blocks], axis=0)
+    block_means = np.array([b.mean(axis=1) for b in blocks])
+    block_deltas = block_means.max(axis=0) - block_means.min(axis=0)
+    return mfcc.mean(axis=1), local_stds, block_deltas
 
 
 def _analyze(path: str) -> dict:
@@ -309,11 +309,12 @@ def _analyze(path: str) -> dict:
 
     mfcc = librosa.feature.mfcc(S=mel_db, n_mfcc=N_MFCC)
     contrast = librosa.feature.spectral_contrast(S=stft_mag, sr=sr, n_fft=N_FFT, hop_length=HOP)
-    mfcc_mean, mfcc_std = _mfcc_stats(np, mfcc)
+    mfcc_mean, mfcc_std, mfcc_delta = _mfcc_stats(np, mfcc)
     return {
         "bpm": bpm,
         "mfcc_mean": [float(x) for x in mfcc_mean],
         "mfcc_std": [float(x) for x in mfcc_std],
+        "mfcc_delta": [float(x) for x in mfcc_delta],
         "contrast_mean": [float(x) for x in contrast.mean(axis=1)],
     }
 
