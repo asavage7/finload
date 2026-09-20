@@ -17,10 +17,10 @@
           "label": "Audio Analysis",
           "description": "Extract audio features from tracks for autoplay.",
           "enabledIf": {
-            "key": "enable_radio",
+            "key": "enable_audio_analysis",
             "value": true
           },
-          "disabledReason": "Turn on Radio in settings to analyze audio."
+          "disabledReason": "Turn on Audio Analysis in settings."
         },
         {
           "key": "genre_enrichment",
@@ -32,7 +32,7 @@
             "key": "enable_genre_enrichment",
             "value": true
           },
-          "disabledReason": "Turn on genre enrichment in settings."
+          "disabledReason": "Turn on Genre Enrichment in settings."
         },
         {
           "key": "metadata",
@@ -44,7 +44,7 @@
             "key": "enable_online_metadata",
             "value": true
           },
-          "disabledReason": "Turn on online metadata in settings."
+          "disabledReason": "Turn on Online Metadata in settings."
         }
       ]
     },
@@ -286,28 +286,6 @@
       ]
     },
     {
-      "id": "sharing",
-      "label": "Analysis Sharing (Experimental)",
-      "settings": [
-        {
-          "key": "export_features",
-          "control": "action",
-          "action": "export_features",
-          "label": "Export analysis data",
-          "description": "Save this library's computed audio-analysis data (BPM, timbre) to a file.",
-          "buttonLabel": "Export…"
-        },
-        {
-          "key": "import_features",
-          "control": "action",
-          "action": "import_features",
-          "label": "Import analysis data",
-          "description": "Load a file exported from another Finload install to skip re-analyzing tracks it already processed.",
-          "buttonLabel": "Import…"
-        }
-      ]
-    },
-    {
       "id": "radio",
       "label": "Radio",
       "settings": [
@@ -318,13 +296,23 @@
           "control": "toggle"
         },
         {
+          "key": "enable_audio_analysis",
+          "label": "Enable Audio Analysis",
+          "description": "Analyze the audio content of your tracks to better recommend similar ones. Already analyzed tracks are not affected.",
+          "control": "toggle",
+          "showIf": {
+            "key": "enable_radio",
+            "value": true
+          }
+        },
+        {
           "key": "analysis_worker_count",
           "label": "Analysis Workers Count",
           "description": "How many songs to analyze in parallel.",
           "control": "number",
           "min": 1,
           "showIf": {
-            "key": "enable_radio",
+            "key": "enable_audio_analysis",
             "value": true
           }
         },
@@ -336,7 +324,7 @@
           "min": 1,
           "max": 100,
           "showIf": {
-            "key": "enable_radio",
+            "key": "enable_audio_analysis",
             "value": true
           }
         },
