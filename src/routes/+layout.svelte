@@ -265,7 +265,7 @@
   onCreate={() => playlistEditStore.set({ open: false, playlist: null })}
 />
 
-<div class="flex h-screen w-full bg-zinc-900 text-white overflow-hidden">
+<div class="flex h-screen w-full bg-zinc-900 text-white overflow-hidden overscroll-none">
   <div class="flex-1 flex relative overflow-hidden">
     {#key $page.url.pathname}
       <main class="flex-1 overflow-auto" in:fade={{ duration: 100 }}>

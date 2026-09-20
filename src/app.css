@@ -34,6 +34,8 @@
 	--accent: #505050;
 	--accent-light: #ffffff;
 	--accent-dark: #1e1e1e;
+
+	color-scheme: dark;
 }
 
 html,

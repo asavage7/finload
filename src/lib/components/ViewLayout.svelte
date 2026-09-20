@@ -23,12 +23,12 @@
   {/if}
 
   {#if $$slots.toolbar}
-    <div class="relative shrink-0 flex items-center justify-between w-full z-70">
+    <div class="relative shrink-0 flex items-center justify-between w-full z-70 overscroll-none">
       <slot name="toolbar" />
     </div>
   {/if}
 
-  <div class="w-full flex-1 min-h-0">
+  <div class="w-full flex-1 min-h-0 overscroll-contain">
     <slot name="content" />
   </div>
 
