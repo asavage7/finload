@@ -73,7 +73,7 @@
       {/if}
     </div>
     {#if $queuePanelActive}
-      <div class="flex h-full w-3/8 justify-center overflow-hidden py-16">
+      <div class="flex h-full w-3/8 justify-center overflow-hidden">
         <div
           class="flex h-full w-full max-w-xl mx-auto justify-center overflow-hidden"
         >

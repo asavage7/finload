@@ -11,7 +11,7 @@
 </script>
 
 <div
-  class="w-full h-screen flex flex-col overflow-y-auto overflow-x-auto transition-[padding] duration-150 ease-out"
+  class="w-full h-screen flex flex-col overflow-y-auto overflow-x-hidden transition-[padding] duration-150 ease-out"
   class:bg-zinc-900={!bgColor}
   style="{bgColor ? `background-color: ${bgColor}; ` : ''}{accentVars}padding-left: {$leftPanelReserve}px; padding-right: {$rightPanelReserve}px"
 >

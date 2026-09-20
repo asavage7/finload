@@ -9,7 +9,8 @@
         | "enable_online_metadata"
         | "enable_lrclib_lyrics"
         | "enable_synced_lyrics"
-        | "enable_radio";
+        | "enable_radio"
+        | "enable_audio_analysis";
 
     // Mirrors the settings-schema.json defaults (settings_manager.py)
     let values: Record<Key, boolean> = {
@@ -18,6 +19,7 @@
         enable_lrclib_lyrics: true,
         enable_synced_lyrics: true,
         enable_radio: true,
+        enable_audio_analysis: true,
     };
 
     const TOGGLES: {
@@ -56,6 +58,14 @@
             label: "Enable Radio",
             description:
                 "Recommend tracks based on genre, audio analysis, and your listening habits",
+        },
+        {
+            key: "enable_audio_analysis",
+            label: "Enable Audio Analysis",
+            description:
+                "Analyze the audio content of your tracks to better recommend similar ones. Already analyzed tracks are not affected",
+            indent: true,
+            showIf: "enable_radio",
         },
     ];
 

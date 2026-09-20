@@ -69,8 +69,7 @@
     library: IconLibrary,
     playback: IconPlayerPlay,
     lyrics: IconMicrophone2,
-    radio: IconRadio,
-    sharing: IconArrowsExchange,
+    radio: IconRadio
   };
 
   let values: Record<string, unknown> = {};
@@ -314,8 +313,8 @@
     const confirmed = await showConfirm({
       title: "Re-run setup?",
       message:
-        "Finload will restart into the setup wizard, so playback stops. Each source keeps its own library, so nothing is deleted.",
-      confirmLabel: "Restart and Set Up",
+        "Finload will restart into the setup wizard. Your current settings will be saved.",
+      confirmLabel: "Restart",
     });
     if (!confirmed) return;
 
@@ -334,93 +333,9 @@
     }
   }
 
-  // Stopgap analysis-data sharing (see src-backend/services/feature_transfer.py):
-  // trades a JSON file of already-computed audio-analysis features between
-  // installs so a fresh one doesn't have to re-run DSP analysis on tracks
-  // someone else already processed.
-  async function exportFeatures() {
-    let path: string | null = null;
-    try {
-      path = await saveFileDialog({
-        title: "Export analysis data",
-        defaultPath: "finload-features.json",
-        filters: [{ name: "Finload feature export", extensions: ["json"] }],
-      });
-    } catch {
-      // Not running under the Tauri webview
-    }
-    if (!path) return;
-
-    actionStatus = { ...actionStatus, export_features: "Exporting…" };
-    try {
-      const res = await fetch(apiUrl("/api/features/export"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
-      });
-      const data = await res.json();
-      actionStatus = {
-        ...actionStatus,
-        export_features: res.ok
-          ? `Exported analysis data for ${data.exported} tracks.`
-          : `Export failed: ${data.detail ?? "unknown error"}`,
-      };
-    } catch (e) {
-      actionStatus = {
-        ...actionStatus,
-        export_features: `Export failed: ${e instanceof Error ? e.message : String(e)}`,
-      };
-    }
-  }
-
-  async function importFeatures() {
-    let path: string | null = null;
-    try {
-      const selected = await openFileDialog({
-        title: "Import analysis data",
-        multiple: false,
-        filters: [{ name: "Finload feature export", extensions: ["json"] }],
-      });
-      path = typeof selected === "string" ? selected : null;
-    } catch {
-      // Not running under the Tauri webview
-    }
-    if (!path) return;
-
-    actionStatus = { ...actionStatus, import_features: "Importing…" };
-    try {
-      const res = await fetch(apiUrl("/api/features/import"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        actionStatus = { ...actionStatus, import_features: `Import failed: ${data.detail ?? "unknown error"}` };
-      } else if (data.version_mismatch) {
-        actionStatus = {
-          ...actionStatus,
-          import_features: "That export was made with a different analysis version, so it was skipped.",
-        };
-      } else {
-        actionStatus = {
-          ...actionStatus,
-          import_features: `Imported analysis data for ${data.imported} of ${data.total} tracks.`,
-        };
-      }
-    } catch (e) {
-      actionStatus = {
-        ...actionStatus,
-        import_features: `Import failed: ${e instanceof Error ? e.message : String(e)}`,
-      };
-    }
-  }
-
   const settingActions: Record<string, () => void> = {
     rerun_setup: rerunSetup,
-    manage_jellyfin_libraries: () => (libraryModalOpen = true),
-    export_features: exportFeatures,
-    import_features: importFeatures,
+    manage_jellyfin_libraries: () => (libraryModalOpen = true)
   };
 </script>
 

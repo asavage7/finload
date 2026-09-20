@@ -14,7 +14,7 @@
         IconFolder,
     } from "@tabler/icons-svelte";
 
-    let librarySource: "jellyfin" | "local" = "jellyfin";
+    let librarySource: "jellyfin" | "local" = "local";
     let jellyfinUrl = "";
     let jellyfinUsername = "";
     let jellyfinPassword = "";
@@ -149,14 +149,14 @@
     >
         <div class="flex border-b border-white/10 font-semibold">
             <button
-                class="px-4 py-2 flex-1 transition {librarySource === 'jellyfin' ? 'text-white bg-white/5' : 'text-white/50'}"
-                on:click={() => (librarySource = "jellyfin")}
-                >Jellyfin</button
-            >
-            <button
                 class="px-4 py-2 flex-1 transition {librarySource === 'local' ? 'text-white bg-white/5' : 'text-white/50'}"
                 on:click={() => (librarySource = "local")}
                 >Local folder</button
+            >
+            <button
+                class="px-4 py-2 flex-1 transition {librarySource === 'jellyfin' ? 'text-white bg-white/5' : 'text-white/50'}"
+                on:click={() => (librarySource = "jellyfin")}
+                >Jellyfin</button
             >
         </div>
         {#if librarySource === "jellyfin"}
@@ -186,6 +186,9 @@
                         class="flex-1 px-4 py-2 rounded-full bg-white/5 text-white/80"
                     />
                 </div>
+                <span class="text-sm text-white/50 px-4">
+                    Running audio analysis on Jellyfin requires downloading most of your music. Therefore, it is much slower and should not be done on a metered connection. You may disable it during the next onboarding step.
+                </span>
             </div>
             <div class="flex justify-end p-3 gap-4 align-center items-center border-t border-white/10">
                 <span

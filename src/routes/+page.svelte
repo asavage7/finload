@@ -107,11 +107,11 @@
   <ViewLayout accent={heroAccentColors}>
     <div slot="content" class="w-full h-full overflow-y-auto pb-28">
       <div class=" px-4 md:px-8 pt-10 max-w-[var(--10xl)] mx-auto">
-        <div
-          class="relative flex flex-col md:flex-row md:items-end gap-6 mb-10 p-4 shadow-xl border border-white/10 rounded-xl overflow-hidden"
-          style={`background-image: linear-gradient(to bottom left, ${heroAccentColors[0]}60, ${heroAccentColors[2]} 80%) `}
-        >
-          {#if heroAlbum}
+        {#if heroAlbum}
+          <div
+            class="relative flex flex-col md:flex-row md:items-end gap-6 mb-10 p-4 shadow-xl border border-white/10 rounded-xl overflow-hidden"
+            style={`background-image: linear-gradient(to bottom left, ${heroAccentColors[0]}60, ${heroAccentColors[2]} 80%) `}
+          >
             <div class="absolute inset-0 opacity-10 pointer-events-none">
               <CoverImage
                 src={getImageUrl(heroAlbum.id, 240, "album")}
@@ -123,9 +123,7 @@
 
             <div class="flex-1 z-10 m-4 min-w-0">
               {#key heroAlbum.id}
-                <div
-                  class="text-sm text-white/50 mb-1"
-                >
+                <div class="text-sm text-white/50 mb-1">
                   {heroCandidate.reason_label}
                 </div>
                 <h1
@@ -203,8 +201,8 @@
                 <IconChevronRight size={18} />
               </button>
             </div>
-          {/if}
-        </div>
+          </div>
+        {/if}
 
         <div class="flex flex-col gap-8">
           {#each data.rows as row, i (i)}
@@ -264,7 +262,11 @@
             class="flex flex-col gap-4 items-center justify-center text-sm text-zinc-400 my-10"
           >
             <span>Don't see what you're looking for?</span>
-            <IconButton accent text on:click={() => window.location.assign("/library")}>
+            <IconButton
+              accent
+              text
+              on:click={() => window.location.assign("/library")}
+            >
               <IconLibrary size={16} />
               <span>Go to your Library</span>
             </IconButton>
