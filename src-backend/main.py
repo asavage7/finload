@@ -14,7 +14,6 @@ from core import state
 from core.config import get_backend_host, get_backend_port, get_cors_origins
 from routers import (
     accent_colors,
-    feature_transfer,
     history,
     images,
     jobs,
@@ -38,7 +37,7 @@ app.add_middleware(
 )
 
 for module in (library, search, images, accent_colors, playlists,
-               playback, settings, sync, jobs, history, quiz, feature_transfer):
+               playback, settings, sync, jobs, history, quiz):
     app.include_router(module.router)
 
 
