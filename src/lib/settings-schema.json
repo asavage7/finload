@@ -349,6 +349,26 @@
           }
         }
       ]
+    },
+    {
+      "id": "advanced",
+      "label": "Advanced",
+      "settings": [
+        {
+          "key": "enable_update_check",
+          "label": "Automatically Check for Updates",
+          "description": "Finload will check for updates on startup and notify you if one is available.",
+          "control": "toggle"
+        },
+        {
+          "key": "check_for_updates",
+          "label": "Check for updates",
+          "description": "If you skipped a version, this will pull it up again.",
+          "control": "action",
+          "action": "check_for_updates",
+          "buttonLabel": "Check Now"
+        }
+      ]
     }
   ]
 }

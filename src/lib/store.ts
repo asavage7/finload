@@ -168,6 +168,7 @@ type ConfirmState = {
     open: boolean;
     title: string;
     message: string;
+    allowCancel: boolean;
     confirmLabel: string;
     cancelLabel: string;
     destructive: boolean;
@@ -179,6 +180,7 @@ export const confirmStore = writable<ConfirmState>({
     open: false,
     title: '',
     message: '',
+    allowCancel: true,
     confirmLabel: 'Confirm',
     cancelLabel: 'Cancel',
     destructive: false,
@@ -192,6 +194,7 @@ export function showConfirm(opts: Partial<Omit<ConfirmState, 'open'>>): Promise<
             title: opts.title ?? '',
             message: opts.message ?? '',
             confirmLabel: opts.confirmLabel ?? 'Confirm',
+            allowCancel: opts.allowCancel ?? true,
             cancelLabel: opts.cancelLabel ?? 'Cancel',
             destructive: opts.destructive ?? false,
         });

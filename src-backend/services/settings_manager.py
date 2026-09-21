@@ -37,6 +37,7 @@ class SettingsManager:
             "enable_genre_enrichment": True,
             "lastfm_api_key": "",
             "enable_radio": True,
+            "enable_audio_analysis": True,
             "analysis_worker_count": 4,
             "analysis_worker_usage": 25,
             "autoplay_default": False,
@@ -44,6 +45,8 @@ class SettingsManager:
             "enable_transcoding": False,
             "transcode_format": "mp3",
             "transcode_bitrate": "192000",
+            "enable_update_check": True,
+            "ignored_update_version": "",
         }
         self.settings = self._load()
         self._listeners = []

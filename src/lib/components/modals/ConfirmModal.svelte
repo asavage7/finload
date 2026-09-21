@@ -1,6 +1,6 @@
 <script lang="ts">
     import Modal from "./Modal.svelte";
-    import { confirmStore, resolveConfirm } from '$lib/store';
+    import { confirmStore, resolveConfirm } from "$lib/store";
 </script>
 
 <Modal
@@ -13,15 +13,19 @@
         <p class="text-sm text-zinc-400 mb-6">{$confirmStore.message}</p>
     {/if}
     <div class="flex gap-3 justify-end">
-        <button
-            on:click={() => resolveConfirm(false)}
-            class="px-4 py-2 rounded-full text-sm font-semibold text-zinc-400 hover:text-white hover:bg-white/10 transition border border-white/10"
-        >
-            {$confirmStore.cancelLabel}
-        </button>
+        {#if $confirmStore.allowCancel}
+            <button
+                on:click={() => resolveConfirm(false)}
+                class="px-4 py-2 rounded-full text-sm font-semibold text-zinc-400 hover:text-white hover:bg-white/10 transition border border-white/10"
+            >
+                {$confirmStore.cancelLabel}
+            </button>
+        {/if}
         <button
             on:click={() => resolveConfirm(true)}
-            class="px-4 py-2 rounded-full text-sm font-semibold border transition {$confirmStore.destructive ? 'text-red-500 bg-red-500/10 hover:bg-red-500/20 border-red-500/10' : 'bg-blue-500 hover:bg-blue-400 text-white border-white/10'}"
+            class="px-4 py-2 rounded-full text-sm font-semibold border transition {$confirmStore.destructive
+                ? 'text-red-500 bg-red-500/10 hover:bg-red-500/20 border-red-500/10'
+                : 'bg-blue-500 hover:bg-blue-400 text-white border-white/10'}"
         >
             {$confirmStore.confirmLabel}
         </button>
