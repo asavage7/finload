@@ -1,6 +1,6 @@
 {
   "name": "finload",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A Jellyfin music player with a Spotify-like experience for your personal library.",
   "type": "module",
   "homepage": "https://github.com/asavage7/finload",
@@ -40,7 +40,8 @@
     "@tabler/icons-svelte": "^3.44.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
-    "@tauri-apps/plugin-opener": "^2.5.5"
+    "@tauri-apps/plugin-opener": "^2.5.5",
+    "marked": "^18.0.13"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",

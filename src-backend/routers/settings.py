@@ -1,9 +1,12 @@
 """Settings routes and the Jellyfin connection test."""
+import json, logging
 from typing import cast
+from urllib.request import Request, urlopen
+from packaging.version import parse as parse_version
 
 from fastapi import APIRouter, Body
 
-from core import state
+from core import state, config
 from providers.jellyfin import JellyfinProvider
 from providers.jellyfin import test_connection as test_jellyfin_connection_impl
 
@@ -61,3 +64,27 @@ def select_jellyfin_libraries(data: dict = Body(...)):
 
     started = state.jobs["sync"].start(state.provider, force=True)
     return {"ok": True, "resync_started": started}
+
+@router.get("/api/settings/update-available")
+def check_update_available():
+    disabled = state.settings.get("enable_update_check") is False
+    minimum_version = state.settings.get("minimum_update_version") or config.APP_VERSION
+    
+    if disabled:
+        return {"ok": False, "error": "Update checks are disabled in settings."}
+    request = Request(
+        "https://api.github.com/repos/asavage7/finload/releases/latest",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "finload",
+        },
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            data = json.loads(response.read())
+            version = data["tag_name"]
+            release_notes = data["body"]
+            return {"ok": True, "update_available": parse_version(version) > parse_version(minimum_version), "release_notes": release_notes, "latest_version": version}
+    except Exception as exc:
+        logging.warning("Update check failed: %s", exc)
+        return {"ok": False, "error": str(exc)}  

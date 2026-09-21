@@ -7,6 +7,7 @@
   import PlaylistPicker from "$lib/components/PlaylistPicker.svelte";
   import ConfirmModal from "$lib/components/modals/ConfirmModal.svelte";
   import PlaylistCreationModal from "$lib/components/modals/PlaylistCreationModal.svelte";
+  import UpdateModal from "$lib/components/modals/UpdateModal.svelte";
   import {
     playlistEditStore,
     playerState,
@@ -34,6 +35,9 @@
 
   let ws: WebSocket | null = null;
   let currentFetchController: AbortController | null = null;
+
+  let updateCheckModalOpen = false;
+  let updateData: { new_version: string; release_notes: string } | null = null;
 
   // WebSocket reconnection state. The backend can take ~30s to come up (and may
   // restart), so the socket must reconnect instead of dying on first failure.
@@ -102,6 +106,7 @@
           // Only meaningful once something can answer it; running it earlier is
           // what made a slow start silently skip onboarding entirely.
           checkOnboarding();
+          checkForUpdates();
           return;
         }
       } catch {
@@ -115,6 +120,25 @@
     };
 
     attempt();
+  }
+
+  async function checkForUpdates() {
+    if (sessionStorage.getItem("updateDismissed") === "true") return;
+    try {
+      const res = await fetch(apiUrl("/api/settings/update-available"));
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok && data.update_available) {
+          updateData = {
+            new_version: data.latest_version,
+            release_notes: data.release_notes,
+          };
+          updateCheckModalOpen = true;
+        }
+      }
+    } catch {
+      // Ignore errors; the backend may not be ready yet.
+    }
   }
 
   async function checkOnboarding() {
@@ -135,11 +159,23 @@
   // Bounces back to /onboarding any time it isn't complete, so it can't be
   // escaped via the sidebar or browser back button. startsWith, not ===,
   // since onboarding itself now spans /onboarding and /onboarding/privacy.
-  $: if ($onboardingComplete === false && !$page.url.pathname.startsWith("/onboarding")) {
+  $: if (
+    $onboardingComplete === false &&
+    !$page.url.pathname.startsWith("/onboarding")
+  ) {
     goto("/onboarding");
   }
 
   onMount(() => {
+    const handleManualUpdate = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      updateData = {
+        new_version: detail.latest_version,
+        release_notes: detail.release_notes,
+      };
+      updateCheckModalOpen = true;
+    };
+
     const handlePlayerCommand = (event: Event) => {
       const e = event as CustomEvent<{ action: string; value?: unknown }>;
       if (ws?.readyState === WebSocket.OPEN) {
@@ -150,13 +186,16 @@
     const handleResize = () => windowWidth.set(window.innerWidth);
     handleResize();
 
+    window.addEventListener("show-update-modal", handleManualUpdate);
     window.addEventListener("player-command", handlePlayerCommand);
     window.addEventListener("resize", handleResize);
+
     connectSocket();
     waitForBackend();
     const stopMediaSession = initMediaSession();
 
     return () => {
+      window.removeEventListener("show-update-modal", handleManualUpdate);
       window.removeEventListener("player-command", handlePlayerCommand);
       window.removeEventListener("resize", handleResize);
       stopMediaSession();
@@ -264,8 +303,15 @@
   onCancel={() => playlistEditStore.set({ open: false, playlist: null })}
   onCreate={() => playlistEditStore.set({ open: false, playlist: null })}
 />
+<UpdateModal
+  bind:open={updateCheckModalOpen}
+  newVersion={updateData?.new_version ?? ""}
+  releaseNotes={updateData?.release_notes ?? ""}
+></UpdateModal>
 
-<div class="flex h-screen w-full bg-zinc-900 text-white overflow-hidden overscroll-none">
+<div
+  class="flex h-screen w-full bg-zinc-900 text-white overflow-hidden overscroll-none"
+>
   <div class="flex-1 flex relative overflow-hidden">
     {#key $page.url.pathname}
       <main class="flex-1 overflow-auto" in:fade={{ duration: 100 }}>
@@ -304,7 +350,11 @@
     {#if !hidesFooter}
       <div
         class="absolute bottom-4 z-1000 transition-[left,right] duration-150 ease-out max-w-[var(--8xl)] mx-auto"
-        style="left: calc(1rem + {isFullScreen ? '0px' : footerLeft}); right: calc(1rem + {isFullScreen ? '0px' : footerRight})"
+        style="left: calc(1rem + {isFullScreen
+          ? '0px'
+          : footerLeft}); right: calc(1rem + {isFullScreen
+          ? '0px'
+          : footerRight})"
       >
         <FooterPlayer />
       </div>
