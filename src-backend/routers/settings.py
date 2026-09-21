@@ -66,9 +66,9 @@ def select_jellyfin_libraries(data: dict = Body(...)):
     return {"ok": True, "resync_started": started}
 
 @router.get("/api/settings/update-available")
-def check_update_available():
-    disabled = state.settings.get("enable_update_check") is False
-    minimum_version = state.settings.get("minimum_update_version") or config.APP_VERSION
+def check_update_available(force: bool = False):
+    disabled = not force and state.settings.get("enable_update_check") is False
+    minimum_version = state.settings.get("ignored_update_version") or config.APP_VERSION
     
     if disabled:
         return {"ok": False, "error": "Update checks are disabled in settings."}
@@ -87,4 +87,4 @@ def check_update_available():
             return {"ok": True, "update_available": parse_version(version) > parse_version(minimum_version), "release_notes": release_notes, "latest_version": version}
     except Exception as exc:
         logging.warning("Update check failed: %s", exc)
-        return {"ok": False, "error": str(exc)}  
+        return {"ok": False, "error": "Unable to check for updates at this time. Please try again later."}  

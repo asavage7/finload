@@ -358,9 +358,9 @@
   }
 
   async function manualUpdateCheck() {
-    saveSetting("minimum_update_version", "");
+    saveSetting("ignored_update_version", "");
     try {
-      const res = await fetch(apiUrl("/api/settings/update-available"));
+      const res = await fetch(apiUrl("/api/settings/update-available?force=true"));
       if (res.ok) {
         const data = await res.json();
         if (data.ok && data.update_available) {

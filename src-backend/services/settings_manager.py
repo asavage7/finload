@@ -46,7 +46,7 @@ class SettingsManager:
             "transcode_format": "mp3",
             "transcode_bitrate": "192000",
             "enable_update_check": True,
-            "minimum_update_version": "",
+            "ignored_update_version": "",
         }
         self.settings = self._load()
         self._listeners = []

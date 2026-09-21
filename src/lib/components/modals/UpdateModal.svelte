@@ -1,10 +1,12 @@
 <script lang="ts">
     import Modal from "./Modal.svelte";
     import { marked } from "marked";
+    import DOMPurify from "dompurify";
     import { openUrl } from "@tauri-apps/plugin-opener";
     import { apiUrl } from "$lib/backend";
     import IconButton from "$lib/components/ui/IconButton.svelte";
     import { IconX } from "@tabler/icons-svelte";
+    import { showConfirm } from "$lib/store";
 
     let {
         open = $bindable(false),
@@ -20,7 +22,9 @@
 
     let html = $derived(
         releaseNotes
-            ? (marked.parse(releaseNotes, { async: false }) as string)
+            ? DOMPurify.sanitize(
+                  marked.parse(releaseNotes, { async: false }) as string,
+              )
             : "",
     );
 
@@ -30,37 +34,24 @@
         onClose?.();
     }
 
-    async function disableAutoUpdate() {
-        let errorDetail: string | null = null;
+    async function updateSetting(
+        setting: Record<string, boolean | string>,
+        errorMessage: string,
+    ) {
         try {
-            const res = await fetch(apiUrl("/api/settings"), {
+            await fetch(apiUrl("/api/settings"), {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ enable_update_check: false }),
+                body: JSON.stringify(setting),
             });
-            if (!res.ok)
-                errorDetail = `HTTP ${res.status}: ${await res.text()}`;
         } catch (e) {
-            errorDetail = e instanceof Error ? e.message : String(e);
-        } finally {
-            if (window.location.pathname.endsWith("/settings"))
-                window.location.reload();
             close();
-        }
-    }
-
-    async function skipVersion() {
-        let errorDetail: string | null = null;
-        try {
-            const res = await fetch(apiUrl("/api/settings"), {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ minimum_update_version: newVersion }),
+            await showConfirm({
+                title: "Error",
+                message: errorMessage,
+                allowCancel: false,
+                confirmLabel: "OK",
             });
-            if (!res.ok)
-                errorDetail = `HTTP ${res.status}: ${await res.text()}`;
-        } catch (e) {
-            errorDetail = e instanceof Error ? e.message : String(e);
         } finally {
             if (window.location.pathname.endsWith("/settings"))
                 window.location.reload();
@@ -96,13 +87,21 @@
     {/if}
     <div class="flex gap-3">
         <button
-            onclick={() => disableAutoUpdate()}
+            onclick={() =>
+                updateSetting(
+                    { enable_update_check: false },
+                    "Failed to disable auto-update.",
+                )}
             class="px-4 py-2 rounded-full text-sm font-semibold text-zinc-400 hover:text-white hover:bg-white/10 transition border border-white/10"
         >
             Don't Show Again
         </button>
         <button
-            onclick={() => skipVersion()}
+            onclick={() =>
+                updateSetting(
+                    { ignored_update_version: newVersion },
+                    "Failed to skip this version.",
+                )}
             class="px-4 py-2 rounded-full text-sm font-semibold text-zinc-400 hover:text-white hover:bg-white/10 transition border border-white/10"
         >
             Skip this Version
