@@ -39,11 +39,15 @@
         errorMessage: string,
     ) {
         try {
-            await fetch(apiUrl("/api/settings"), {
+            const res = await fetch(apiUrl("/api/settings"), {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(setting),
             });
+            if (!res.ok) throw new Error("Failed to update setting.");
+            if (window.location.pathname.endsWith("/settings"))
+                window.location.reload();
+            close();
         } catch (e) {
             close();
             await showConfirm({
@@ -52,10 +56,6 @@
                 allowCancel: false,
                 confirmLabel: "OK",
             });
-        } finally {
-            if (window.location.pathname.endsWith("/settings"))
-                window.location.reload();
-            close();
         }
     }
 </script>
