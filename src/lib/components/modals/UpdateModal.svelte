@@ -72,7 +72,7 @@
         <IconButton
             white
             onclick={close}
-            aria-label="Close queue panel"
+            aria-label="Close update dialog"
             class="bg-white/5 hover:bg-white/10"
         >
             <IconX size={16} />
