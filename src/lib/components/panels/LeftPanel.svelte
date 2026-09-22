@@ -49,7 +49,7 @@
     const navItems: NavItem[] = [
         { label: "Home", href: "/", icon: IconHome, activeIcon: IconHomeFilled },
         { label: "Library", href: "/library", icon: IconLibrary, activeIcon: IconLibraryFilled },
-        { label: "Support Finload", href: "https://github.com/asavage7/finload", icon: IconHeart, activeIcon: IconHeartFilled, bottom: true, external: true },
+        { label: "Support Compass", href: "https://github.com/asavage7/finload", icon: IconHeart, activeIcon: IconHeartFilled, bottom: true, external: true },
         { label: "Settings", href: "/settings", icon: IconSettings, activeIcon: IconSettingsFilled },
     ];
 
@@ -150,8 +150,8 @@
         class="flex items-center justify-center px-1 h-9 shrink-0"
     >
         {#if !condensed}
-        <img src="favicon.png" alt="Finload" class="h-6 w-auto" />
-            <span class="font-bold text-md text-white/90 pl-3 w-full">Finload</span>
+        <img src="favicon.png" alt="Compass" class="h-6 w-auto" />
+            <span class="font-bold text-md text-white/90 pl-3 w-full">Compass</span>
         {/if}
         <IconButton
             white

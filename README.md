@@ -28,7 +28,7 @@ Compass is a next-gen music experience built around discovery. Sync your library
 - Browse your library with a functional but incredibly elegant UI.
 
 ### How it Works
-Compass analyzes your music directly using DSP to extract acoustic similarites between songs. It combines this with genre tags and your listening history to curate the perfect collection of songs. Compass even takes into account how you interact with songs day-to-day to match your tastes.
+Compass analyzes your music directly using DSP to extract acoustic similarities between songs. It combines this with genre tags and your listening history to curate the perfect collection of songs. Compass even takes into account how you interact with songs day-to-day to match your tastes.
 
 **Compass optionally connects to MusicBrainz, Last.fm, and TheAudioDB to better learn your library. Audio analysis is entirely local.**
 

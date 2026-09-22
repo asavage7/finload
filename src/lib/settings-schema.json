@@ -57,7 +57,7 @@
           "control": "action",
           "action": "rerun_setup",
           "label": "Change library source",
-          "description": "Re-runs setup so you can point Finload at a different Jellyfin server or local folder. Finload restarts to do this.",
+          "description": "Re-runs setup so you can point Compass at a different Jellyfin server or local folder. Requires a restart.",
           "buttonLabel": "Re-run setup"
         },
         {
@@ -357,7 +357,7 @@
         {
           "key": "enable_update_check",
           "label": "Automatically Check for Updates",
-          "description": "Finload will check for updates on startup and notify you if one is available.",
+          "description": "Compass will check for updates on startup and notify you if one is available.",
           "control": "toggle"
         },
         {

@@ -1,5 +1,5 @@
 {
-  "name": "finload",
+  "name": "compass-music",
   "version": "0.2.1",
   "description": "A Jellyfin music player with a Spotify-like experience for your personal library.",
   "type": "module",

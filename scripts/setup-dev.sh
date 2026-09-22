@@ -4,7 +4,7 @@
 
 set -e
 
-echo "=== Finload Dev Setup (Linux) ==="
+echo "=== Compass Music Dev Setup (Linux) ==="
 
 # ── System packages ────────────────────────────────────────────────────────────
 echo ""

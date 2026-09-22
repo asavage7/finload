@@ -26,7 +26,7 @@
       <div class="space-y-1">
         <p class="text-md font-medium text-amber-300">Couldn't reach the player service.</p>
         <p class="max-w-sm text-sm text-zinc-400">
-          Finload's audio service didn't start. Restarting the app usually fixes
+          Compass Backend Service didn't start. Restarting the app usually fixes
           this. If it keeps happening, please report it.
         </p>
       </div>
@@ -38,7 +38,7 @@
       </button>
     {:else}
       <IconLoader2 size={32} class="animate-spin text-zinc-500" />
-      <p class="text-lg font-medium text-zinc-500">Starting Finload...</p>
+      <p class="text-lg font-medium text-zinc-500">Starting Compass...</p>
     {/if}
   </div>
 {/if}
