@@ -31,7 +31,7 @@
 
 <header class="relative w-full flex items-end md:px-8 pt-8 pb-4 pt-18">
   {#if id}
-    <div class="absolute inset-0 opacity-15 pointer-events-none overscroll-contain">
+    <div class="absolute inset-0 pointer-events-none overscroll-contain animate-fade-in">
       <CoverImage
         src={getImageUrl(id, 240, typeLabel)}
         alt=""
